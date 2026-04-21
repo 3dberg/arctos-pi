@@ -104,6 +104,22 @@ def test_parse_pulses_roundtrip():
     assert mks.parse_pulses(can_id, payload) == 12345
 
 
+def test_parse_pulses_int48_firmware():
+    # Newer MKS firmware returns int48 pulses (8-byte payload).
+    # Real capture from axis 3: 31 FF FF FF F9 BF 04 ED → -409852
+    can_id = 3
+    payload = bytes.fromhex("31FFFFFFF9BF04ED")
+    assert mks.parse_pulses(can_id, payload) == -409852
+
+    # Positive case round-trip with a large int48 value.
+    can_id = 5
+    pulses = 0xE48E5
+    body = bytes([0x31]) + pulses.to_bytes(6, "big", signed=True)
+    crc = (can_id + sum(body)) & 0xFF
+    payload = body + bytes([crc])
+    assert mks.parse_pulses(can_id, payload) == pulses
+
+
 def test_parse_encoder_carry_roundtrip():
     can_id = 2
     body = bytes([0x30]) + (-5).to_bytes(4, "big", signed=True) + (0x1234).to_bytes(2, "big")

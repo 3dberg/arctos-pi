@@ -1,0 +1,17 @@
+[Unit]
+Description=Bring up can0 (MKS CANable v1.0 Pro, gs_usb) at 500 kbit/s
+# gs_usb adapters register late via USB, so wait for sysfs to settle.
+After=sys-subsystem-net-devices-can0.device
+BindsTo=sys-subsystem-net-devices-can0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Bring the link down first so we can (re)set the bitrate; ignore failure
+# if it's already down. Then bring it up with our parameters.
+ExecStartPre=-/sbin/ip link set can0 down
+ExecStart=/sbin/ip link set can0 up type can bitrate 500000
+ExecStop=/sbin/ip link set can0 down
+
+[Install]
+WantedBy=sys-subsystem-net-devices-can0.device

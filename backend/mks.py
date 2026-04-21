@@ -173,9 +173,23 @@ def parse_encoder_carry(can_id: int, payload: bytes) -> EncoderCarry:
 
 
 def parse_pulses(can_id: int, payload: bytes) -> int:
-    """Payload from 0x31: [CMD][int32 pulses][CRC]. 6 bytes."""
-    _check(can_id, payload, expected_cmd=Cmd.READ_PULSES, expected_len=6)
-    return int.from_bytes(payload[1:5], "big", signed=True)
+    """Payload from 0x31: [CMD][int pulses][CRC].
+
+    Width depends on driver firmware revision:
+      - older (V1.0.4/5): int32 → 6 bytes total
+      - newer (≥V1.0.6 on SERVO42D/57D): int48 → 8 bytes total
+    Accept both; caller gets a signed Python int either way.
+    """
+    if len(payload) == 6:
+        _check(can_id, payload, expected_cmd=Cmd.READ_PULSES, expected_len=6)
+        return int.from_bytes(payload[1:5], "big", signed=True)
+    if len(payload) == 8:
+        _check(can_id, payload, expected_cmd=Cmd.READ_PULSES, expected_len=8)
+        return int.from_bytes(payload[1:7], "big", signed=True)
+    raise ValueError(
+        f"unexpected READ_PULSES reply length: {len(payload)} "
+        f"(want 6 for int32-pulses firmware or 8 for int48-pulses firmware)"
+    )
 
 
 def _check(can_id: int, payload: bytes, expected_cmd: int, expected_len: int) -> None:

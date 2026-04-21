@@ -1,7 +1,9 @@
 """CAN bus abstraction for the MKS CANable v1.0 Pro (slcan) adapter.
 
-Three backends, selected by config:
+Four backends, selected by config:
   - slcan: real hardware via python-can, channel = serial device path.
+  - socketcan: real hardware via Linux kernel SocketCAN (e.g. gs_usb firmware
+               on CANable Pro), channel = kernel interface name like 'can0'.
   - mock: in-process fake bus for laptop dev / CI. Records sent frames;
           supplies synthesized encoder-read responses.
   - dry_run: opens no hardware, only logs outgoing frames. Useful for
@@ -57,6 +59,63 @@ class SlcanBus:
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True, name="can-rx")
         self._rx_thread.start()
         log.info("SlcanBus opened on %s @ %d", channel, bitrate)
+
+    def send(self, frame: Frame) -> None:
+        msg = self._can.Message(
+            arbitration_id=frame.arbitration_id,
+            data=frame.data,
+            is_extended_id=False,
+        )
+        self._bus.send(msg, timeout=0.2)
+
+    def on_receive(self, callback: Callable[[Frame], None]) -> None:
+        self._callbacks.append(callback)
+
+    def _rx_loop(self) -> None:
+        while not self._stop.is_set():
+            msg = self._bus.recv(timeout=0.1)
+            if msg is None:
+                continue
+            f = Frame(arbitration_id=msg.arbitration_id, data=bytes(msg.data))
+            for cb in self._callbacks:
+                try:
+                    cb(f)
+                except Exception:
+                    log.exception("receiver callback failed")
+
+    def shutdown(self) -> None:
+        self._stop.set()
+        self._bus.shutdown()
+
+
+# ---------------- python-can socketcan backend ----------------
+
+class SocketCanBus:
+    """Real hardware via Linux kernel SocketCAN.
+
+    Use this when the CANable Pro runs gs_usb firmware (VID 1d50:606f), which
+    exposes the adapter as a kernel CAN interface (e.g. can0) rather than a
+    serial /dev/ttyACM device.
+
+    Bring the interface up before starting the app:
+        sudo ip link set can0 up type can bitrate 500000
+
+    channel: kernel interface name (e.g. 'can0')
+    bitrate: informational only on socketcan — the kernel interface must
+             already be configured with the correct bitrate via `ip link`.
+    """
+    def __init__(self, channel: str, bitrate: int = 500_000):
+        try:
+            import can  # type: ignore
+        except ImportError as e:
+            raise RuntimeError("python-can not installed; pip install python-can") from e
+        self._can = can
+        self._bus = can.interface.Bus(bustype="socketcan", channel=channel)
+        self._callbacks: list[Callable[[Frame], None]] = []
+        self._stop = threading.Event()
+        self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True, name="can-rx")
+        self._rx_thread.start()
+        log.info("SocketCanBus opened on %s (kernel bitrate applies)", channel)
 
     def send(self, frame: Frame) -> None:
         msg = self._can.Message(
@@ -162,11 +221,15 @@ class DryRunBus:
 # ---------------- Factory ----------------
 
 def open_bus(backend: str, channel: Optional[str] = None, bitrate: int = 500_000) -> CanBus:
-    """backend: 'slcan' | 'mock' | 'dry_run'"""
+    """backend: 'slcan' | 'socketcan' | 'mock' | 'dry_run'"""
     if backend == "slcan":
         if not channel:
             raise ValueError("slcan backend requires a channel (e.g. /dev/ttyACM0)")
         return SlcanBus(channel, bitrate)
+    if backend == "socketcan":
+        if not channel:
+            raise ValueError("socketcan backend requires a channel (e.g. can0)")
+        return SocketCanBus(channel, bitrate)
     if backend == "mock":
         return MockBus()
     if backend == "dry_run":
