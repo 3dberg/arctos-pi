@@ -25,7 +25,7 @@ pytest            # unit tests
 ## Phases
 
 - [x] 1. MKS protocol module + tests
-- [ ] 2. CAN bus wrapper + motion coordinator
+- [x] 2. CAN bus wrapper + motion coordinator
 - [ ] 3. FastAPI + WS + minimal jog UI
 - [ ] 4. Teach / record + program JSON format
 - [ ] 5. Program queue + legacy `.tap` / `.txt` loader

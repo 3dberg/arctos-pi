@@ -1,0 +1,18 @@
+# Copy to config.yaml and edit for your robot.
+can:
+  backend: mock          # slcan | mock | dry_run
+  channel: null          # e.g. /dev/ttyACM0 for real CANable Pro, null = autodetect
+  bitrate: 500000
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  heartbeat_ms: 200
+
+axes:
+  - { can_id: 1, name: J1, gear_ratio: 13.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -180, soft_limit_max: 180, default_current_ma: 1600, default_microsteps: 16 }
+  - { can_id: 2, name: J2, gear_ratio: 150,  pulses_per_rev: 3200, invert: true,  max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 2000, default_microsteps: 16 }
+  - { can_id: 3, name: J3, gear_ratio: 150,  pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 2000, default_microsteps: 16 }
+  - { can_id: 4, name: J4, gear_ratio: 48,   pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -180, soft_limit_max: 180, default_current_ma: 1600, default_microsteps: 16 }
+  - { can_id: 5, name: J5, gear_ratio: 67.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 1600, default_microsteps: 16 }
+  - { can_id: 6, name: J6, gear_ratio: 13.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -360, soft_limit_max: 360, default_current_ma: 1600, default_microsteps: 16 }
