@@ -18,15 +18,25 @@ with a 7" HDMI touchscreen and also on x86_64 Linux for development.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
-pytest            # unit tests
-# backend/mock CAN bus mode: coming in phase 2
+pytest                          # run unit tests (26 passing)
+./run_dev.sh                    # start server on :8000 with mock CAN bus
+# open http://localhost:8000
+```
+
+Copy `config.example.yaml` → `config.yaml` and edit gear ratios / limits
+before using real hardware. To switch to hardware, set:
+
+```yaml
+can:
+  backend: slcan
+  channel: /dev/ttyACM0         # or leave null for autodetect
 ```
 
 ## Phases
 
 - [x] 1. MKS protocol module + tests
 - [x] 2. CAN bus wrapper + motion coordinator
-- [ ] 3. FastAPI + WS + minimal jog UI
+- [x] 3. FastAPI + WS + minimal jog UI
 - [ ] 4. Teach / record + program JSON format
 - [ ] 5. Program queue + legacy `.tap` / `.txt` loader
 - [ ] 6. Install script + systemd + kiosk mode
