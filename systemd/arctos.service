@@ -1,0 +1,15 @@
+[Unit]
+Description=arctos-pi CAN controller + web UI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@@REPO_DIR@@
+ExecStart=@@REPO_DIR@@/.venv/bin/python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+# Tighten when running as root on Pi; user unit runs as the invoking user.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
