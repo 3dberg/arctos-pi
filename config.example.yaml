@@ -1,7 +1,9 @@
 # Copy to config.yaml and edit for your robot.
 can:
-  backend: mock          # slcan | mock | dry_run
-  channel: null          # e.g. /dev/ttyACM0 for real CANable Pro, null = autodetect
+  backend: mock          # socketcan | slcan | mock | dry_run
+  # channel: 'can0' for socketcan (CANable Pro w/ gs_usb firmware — recommended),
+  #         '/dev/ttyACM0' for slcan (CANable firmware), null = autodetect slcan
+  channel: null
   bitrate: 500000
 
 server:

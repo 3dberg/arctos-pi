@@ -25,8 +25,8 @@ class AxisConfig:
 
 @dataclass
 class CanConfig:
-    backend: str = "mock"               # slcan | mock | dry_run
-    channel: Optional[str] = None       # autodetect when None and backend=slcan
+    backend: str = "mock"               # slcan | socketcan | mock | dry_run
+    channel: Optional[str] = None       # autodetect when None and backend=slcan; 'can0' etc. for socketcan
     bitrate: int = 500_000
 
 

@@ -65,6 +65,16 @@ EOF
     echo "==> udev: /dev/arctos-canable symlink installed (replug adapter to activate)"
 fi
 
+# ---- systemd system unit: bring up can0 at boot (gs_usb firmware) ----
+if [ "$NO_SERVICE" = 0 ]; then
+    sudo install -m 0644 systemd/can0.service /etc/systemd/system/can0.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable can0.service
+    # Try to start now; harmless if the adapter isn't plugged in yet.
+    sudo systemctl start can0.service || true
+    echo "==> systemd: can0.service enabled (bitrate 500000)"
+fi
+
 # ---- systemd user service ----
 if [ "$NO_SERVICE" = 0 ]; then
     mkdir -p ~/.config/systemd/user

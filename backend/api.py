@@ -237,9 +237,15 @@ async def ws_endpoint(ws: WebSocket):
 async def _watchdog_loop():
     """Broadcast state regularly; stop motion if heartbeat is stale
     AND there are active jog commands — in MVP we conservatively stop-all.
+    Also polls every axis for pulses each tick so the UI shows live position.
     """
     interval = 0.2
     timeout_s = (state.cfg.server.heartbeat_ms / 1000.0) * 5  # 5x heartbeat
+    # Prime the pump so the first broadcast isn't all zeros.
+    try:
+        _motion().request_all_positions()
+    except Exception:
+        log.exception("initial position poll failed")
     while True:
         await asyncio.sleep(interval)
         try:
@@ -250,6 +256,9 @@ async def _watchdog_loop():
                     log.warning("WS heartbeat stale (>%.2fs); stopping jogs", timeout_s)
                     _motion().jog_stop_all()
                     state.last_heartbeat = time.monotonic()
+            # Kick off reads for the next tick; replies land via _on_frame
+            # before the next broadcast, so state stays fresh at ~5 Hz.
+            _motion().request_all_positions()
         except Exception:
             log.exception("watchdog iteration failed")
 
