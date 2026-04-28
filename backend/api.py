@@ -17,6 +17,7 @@ from .can_bus import autodetect_channel, open_bus
 from .config import AppConfig
 from .gripper import Gripper
 from .motion import LimitViolation, Motion
+from .teach import TeachError, TeachRecorder
 
 log = logging.getLogger("arctos.api")
 
@@ -60,12 +61,32 @@ class GripperReq(BaseModel):
     position: int = Field(ge=0, le=255)
 
 
+class CaptureReq(BaseModel):
+    dwell_ms: int = Field(0, ge=0, le=600_000)
+    speed_pct: float = Field(0.5, gt=0.0, le=1.0)
+
+
+class WaypointPatch(BaseModel):
+    dwell_ms: Optional[int] = Field(None, ge=0, le=600_000)
+    speed_pct: Optional[float] = Field(None, gt=0.0, le=1.0)
+    gripper: Optional[int] = Field(None, ge=0, le=255)
+
+
+class ReorderReq(BaseModel):
+    to: int = Field(ge=0)
+
+
+class ProgramNameReq(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
 # ---------------- App wiring ----------------
 
 class AppState:
     cfg: AppConfig
     motion: Motion
     gripper: Gripper
+    teach: TeachRecorder
     last_heartbeat: float = 0.0
     ws_connected: int = 0
 
@@ -75,6 +96,7 @@ class AppState:
         bus = open_bus(self.cfg.can.backend, channel=channel, bitrate=self.cfg.can.bitrate)
         self.motion = Motion(self.cfg, bus)
         self.gripper = Gripper(self.cfg.gripper, bus)
+        self.teach = TeachRecorder(motion=self.motion, gripper=self.gripper)
         log.info(
             "motion ready, backend=%s, gripper=%s",
             self.cfg.can.backend,
@@ -110,6 +132,11 @@ def _gripper() -> Gripper:
     return state.gripper
 
 
+def _teach() -> TeachRecorder:
+    assert state is not None
+    return state.teach
+
+
 # ---------------- REST endpoints ----------------
 
 @app.get("/api/state")
@@ -117,8 +144,16 @@ def get_state():
     return {
         "axes": _motion().state_dict(),
         "gripper": _gripper().state_dict(),
+        "teach": _teach_summary(),
         "backend": state.cfg.can.backend,
     }
+
+
+def _teach_summary() -> dict:
+    """Lightweight teach summary for the WS broadcast — full waypoint list
+    is fetched on demand via GET /api/teach to keep the 5 Hz tick small."""
+    t = _teach()
+    return {"count": len(t.waypoints), "loaded_name": t.loaded_name, "dirty": t.dirty}
 
 
 @app.get("/api/config")
@@ -237,6 +272,87 @@ def gripper_close():
     return {"ok": True, "position": sent}
 
 
+# ---------------- Teach / record ----------------
+
+@app.get("/api/teach")
+def teach_state():
+    return _teach().state_dict()
+
+
+@app.post("/api/teach/capture")
+def teach_capture(req: CaptureReq):
+    try:
+        wp = _teach().capture(dwell_ms=req.dwell_ms, speed_pct=req.speed_pct)
+    except TeachError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "waypoint": wp.to_dict(), "count": len(_teach().waypoints)}
+
+
+@app.post("/api/teach/clear")
+def teach_clear():
+    _teach().clear()
+    return {"ok": True}
+
+
+@app.delete("/api/teach/{idx}")
+def teach_delete(idx: int):
+    try:
+        _teach().delete(idx)
+    except TeachError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@app.patch("/api/teach/{idx}")
+def teach_patch(idx: int, req: WaypointPatch):
+    try:
+        wp = _teach().update(idx, dwell_ms=req.dwell_ms, speed_pct=req.speed_pct, gripper=req.gripper)
+    except TeachError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "waypoint": wp.to_dict()}
+
+
+@app.post("/api/teach/{idx}/reorder")
+def teach_reorder(idx: int, req: ReorderReq):
+    try:
+        _teach().reorder(idx, req.to)
+    except TeachError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@app.get("/api/teach/programs")
+def teach_list_programs():
+    return {"programs": _teach().list_programs()}
+
+
+@app.post("/api/teach/save")
+def teach_save(req: ProgramNameReq):
+    try:
+        path = _teach().save(req.name)
+    except TeachError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "name": req.name, "path": str(path)}
+
+
+@app.post("/api/teach/load")
+def teach_load(req: ProgramNameReq):
+    try:
+        _teach().load(req.name)
+    except TeachError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "count": len(_teach().waypoints)}
+
+
+@app.delete("/api/teach/programs/{name}")
+def teach_delete_program(name: str):
+    try:
+        _teach().delete_program(name)
+    except TeachError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True}
+
+
 # ---------------- WebSocket + watchdog ----------------
 
 class WsHub:
@@ -308,6 +424,7 @@ async def _watchdog_loop():
                 "type": "state",
                 "axes": _motion().state_dict(),
                 "gripper": _gripper().state_dict(),
+                "teach": _teach_summary(),
             })
             if state.ws_connected > 0:
                 stale = (time.monotonic() - state.last_heartbeat) > timeout_s

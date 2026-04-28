@@ -117,19 +117,30 @@ motor power.
 - [x] 1. MKS protocol module + tests
 - [x] 2. CAN bus wrapper + motion coordinator
 - [x] 3. FastAPI + WS + minimal jog UI
-- [ ] 4. Teach / record + program JSON format *(scaffolded in `backend/teach.py`)*
+- [x] 4. Teach / record + program JSON format
 - [ ] 5. Program queue + legacy `.tap` / `.txt` loader *(scaffolded in `backend/programs.py`)*
 - [x] 6. Install script + systemd user unit + chromium kiosk
 
-### Phase 4 (next) — Teach / Record
+### Phase 4 — Teach / Record (done)
 
-Adds a recorder that polls `Motion.state_dict()` at 10 Hz while active,
-and a "Capture waypoint" button that snapshots all 6 joint positions
-plus optional dwell and speed override. Edit list in-place (reorder,
-delete, tweak). Save/load as `~/.arctos/programs/*.json`. UI: a new
-"Teach" tab in the right panel with a waypoint list and record controls.
+Implemented in `backend/teach.py` + Teach tab in the UI. "Capture waypoint"
+snapshots the current joint degrees (and gripper position when enabled);
+list edit supports reorder, delete, and per-waypoint tweaks of `dwell_ms`
+and `speed_pct`. Programs save/load as JSON under `~/.arctos/programs/`,
+schema version 1:
 
-### Phase 5 (after 4) — Multi-program queue
+```json
+{ "name": "pick-place", "version": 1,
+  "waypoints": [
+    { "joints": {"J1": 0.0, "J2": -45.0, ...}, "dwell_ms": 250,
+      "speed_pct": 0.4, "gripper": 200 }
+  ] }
+```
+
+Replay belongs to Phase 5 — capture-only for now keeps the surface
+small while hardware bring-up is in progress.
+
+### Phase 5 (next) — Multi-program queue
 
 Adds a Programs tab:
 - Library view listing all JSON programs in `~/.arctos/programs/`.

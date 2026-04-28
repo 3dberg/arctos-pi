@@ -1,6 +1,10 @@
 // arctos-pi minimal jog UI. Vanilla JS, no build step.
 
-const state = { axes: [], cfg: null, speed: 0.25, ws: null, lastPong: 0, gripperDragging: false };
+const state = {
+  axes: [], cfg: null, speed: 0.25, ws: null, lastPong: 0,
+  gripperDragging: false,
+  teach: { count: 0, loaded_name: null, dirty: false, waypoints: [] },
+};
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -88,6 +92,159 @@ function renderGripper(g) {
   }
 }
 
+function renderTeachSummary(t) {
+  if (!t) return;
+  // Only refetch the full waypoint list if something changed.
+  const changed = t.count !== state.teach.count || t.loaded_name !== state.teach.loaded_name || t.dirty !== state.teach.dirty;
+  state.teach.count = t.count;
+  state.teach.loaded_name = t.loaded_name;
+  state.teach.dirty = t.dirty;
+  renderTeachLoadedLabel();
+  if (changed) refreshTeach().catch(() => {});
+}
+
+function renderTeachLoadedLabel() {
+  const lbl = $("#teach-loaded");
+  if (!lbl) return;
+  const name = state.teach.loaded_name;
+  const dirty = state.teach.dirty ? " *" : "";
+  lbl.textContent = name ? `loaded: ${name}${dirty}` : (state.teach.count ? "— unsaved —" : "— no program loaded —");
+}
+
+function renderTeachList() {
+  const host = $("#teach-list");
+  if (!host) return;
+  host.innerHTML = "";
+  const wps = state.teach.waypoints || [];
+  if (wps.length === 0) {
+    host.innerHTML = '<div class="text-xs text-gray-500 italic">No waypoints. Jog to a pose, then "+ Capture waypoint".</div>';
+    return;
+  }
+  wps.forEach((wp, idx) => {
+    const row = document.createElement("div");
+    row.className = "bg-gray-900 rounded p-2 flex items-center gap-2";
+    const joints = Object.entries(wp.joints).map(([k, v]) => `${k}:${Number(v).toFixed(1)}°`).join(" ");
+    const grip = (wp.gripper !== undefined && wp.gripper !== null) ? ` <span class="text-amber-400">G${wp.gripper}</span>` : "";
+    row.innerHTML = `
+      <div class="w-6 text-xs text-gray-500">${idx + 1}</div>
+      <div class="flex-1 font-mono text-xs truncate" title="${joints}">${joints}${grip}</div>
+      <label class="text-xs text-gray-400">dwell
+        <input type="number" min="0" max="600000" step="100" value="${wp.dwell_ms}" data-idx="${idx}"
+               class="wp-dwell bg-gray-800 rounded px-1 py-0.5 w-16 ml-1" />
+      </label>
+      <label class="text-xs text-gray-400">spd
+        <input type="number" min="1" max="100" step="1" value="${Math.round(wp.speed_pct * 100)}" data-idx="${idx}"
+               class="wp-speed bg-gray-800 rounded px-1 py-0.5 w-12 ml-1" />
+      </label>
+      <button data-idx="${idx}" data-act="up" class="wp-act btn bg-gray-700 hover:bg-gray-600 rounded px-2 py-0.5 text-xs" ${idx === 0 ? "disabled" : ""}>↑</button>
+      <button data-idx="${idx}" data-act="down" class="wp-act btn bg-gray-700 hover:bg-gray-600 rounded px-2 py-0.5 text-xs" ${idx === wps.length - 1 ? "disabled" : ""}>↓</button>
+      <button data-idx="${idx}" data-act="del" class="wp-act btn bg-red-700 hover:bg-red-600 rounded px-2 py-0.5 text-xs">×</button>
+    `;
+    host.appendChild(row);
+  });
+  for (const inp of $$(".wp-dwell")) {
+    inp.addEventListener("change", async () => {
+      const idx = parseInt(inp.dataset.idx, 10);
+      try { await api(`/api/teach/${idx}`, { method: "PATCH", body: { dwell_ms: parseInt(inp.value, 10) } }); }
+      catch (e) { setStatus("teach: " + e.message, "text-red-400"); }
+    });
+  }
+  for (const inp of $$(".wp-speed")) {
+    inp.addEventListener("change", async () => {
+      const idx = parseInt(inp.dataset.idx, 10);
+      try { await api(`/api/teach/${idx}`, { method: "PATCH", body: { speed_pct: parseInt(inp.value, 10) / 100 } }); }
+      catch (e) { setStatus("teach: " + e.message, "text-red-400"); }
+    });
+  }
+  for (const b of $$(".wp-act")) {
+    b.addEventListener("click", async () => {
+      const idx = parseInt(b.dataset.idx, 10);
+      try {
+        if (b.dataset.act === "del") {
+          await api(`/api/teach/${idx}`, { method: "DELETE" });
+        } else if (b.dataset.act === "up") {
+          await api(`/api/teach/${idx}/reorder`, { method: "POST", body: { to: idx - 1 } });
+        } else if (b.dataset.act === "down") {
+          await api(`/api/teach/${idx}/reorder`, { method: "POST", body: { to: idx + 1 } });
+        }
+        await refreshTeach();
+      } catch (e) { setStatus("teach: " + e.message, "text-red-400"); }
+    });
+  }
+}
+
+async function refreshTeach() {
+  const t = await api("/api/teach");
+  state.teach = { count: t.count, loaded_name: t.loaded_name, dirty: t.dirty, waypoints: t.waypoints || [] };
+  renderTeachLoadedLabel();
+  renderTeachList();
+}
+
+async function refreshTeachPrograms() {
+  const sel = $("#teach-programs");
+  if (!sel) return;
+  try {
+    const { programs } = await api("/api/teach/programs");
+    const prev = sel.value;
+    sel.innerHTML = programs.length === 0
+      ? '<option value="">— none saved —</option>'
+      : programs.map(n => `<option value="${n}">${n}</option>`).join("");
+    if (programs.includes(prev)) sel.value = prev;
+  } catch (e) { /* non-fatal */ }
+}
+
+function initTeach() {
+  $("#teach-capture").addEventListener("click", async () => {
+    try {
+      await api("/api/teach/capture", { method: "POST", body: {
+        dwell_ms: parseInt($("#teach-dwell").value, 10) || 0,
+        speed_pct: (parseInt($("#teach-speed").value, 10) || 50) / 100,
+      }});
+      await refreshTeach();
+    } catch (e) { setStatus("capture: " + e.message, "text-red-400"); }
+  });
+  $("#teach-clear").addEventListener("click", async () => {
+    if (state.teach.count > 0 && !confirm("Clear all captured waypoints?")) return;
+    try { await api("/api/teach/clear", { method: "POST" }); await refreshTeach(); }
+    catch (e) { setStatus("teach: " + e.message, "text-red-400"); }
+  });
+  $("#teach-save").addEventListener("click", async () => {
+    const name = $("#teach-name").value.trim() || state.teach.loaded_name;
+    if (!name) { setStatus("teach: enter a program name", "text-yellow-400"); return; }
+    try {
+      await api("/api/teach/save", { method: "POST", body: { name } });
+      await refreshTeachPrograms();
+      await refreshTeach();
+      setStatus(`saved program: ${name}`, "text-emerald-400");
+    } catch (e) { setStatus("save: " + e.message, "text-red-400"); }
+  });
+  $("#teach-load").addEventListener("click", async () => {
+    const sel = $("#teach-programs");
+    const name = sel.value;
+    if (!name) return;
+    if (state.teach.dirty && !confirm("Replace unsaved waypoints?")) return;
+    try {
+      await api("/api/teach/load", { method: "POST", body: { name } });
+      $("#teach-name").value = name;
+      await refreshTeach();
+      setStatus(`loaded program: ${name}`, "text-emerald-400");
+    } catch (e) { setStatus("load: " + e.message, "text-red-400"); }
+  });
+  $("#teach-delete-prog").addEventListener("click", async () => {
+    const sel = $("#teach-programs");
+    const name = sel.value;
+    if (!name) return;
+    if (!confirm(`Delete saved program "${name}"?`)) return;
+    try {
+      await api(`/api/teach/programs/${encodeURIComponent(name)}`, { method: "DELETE" });
+      await refreshTeachPrograms();
+      setStatus(`deleted program: ${name}`, "text-emerald-400");
+    } catch (e) { setStatus("delete: " + e.message, "text-red-400"); }
+  });
+  refreshTeachPrograms();
+  refreshTeach();
+}
+
 function initGripper() {
   const g = state.cfg.gripper;
   if (!g || !g.enabled) return;
@@ -172,6 +329,7 @@ function connectWs() {
     if (msg.type === "state") {
       renderStatus(msg.axes);
       renderGripper(msg.gripper);
+      renderTeachSummary(msg.teach);
     }
     if (msg.type === "pong") state.lastPong = msg.t;
   };
@@ -198,6 +356,7 @@ async function init() {
     renderJogAxes();
     renderConfig();
     initGripper();
+    initTeach();
     initTabs();
     connectWs();
 
