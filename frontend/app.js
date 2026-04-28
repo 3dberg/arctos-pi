@@ -1,6 +1,6 @@
 // arctos-pi minimal jog UI. Vanilla JS, no build step.
 
-const state = { axes: [], cfg: null, speed: 0.25, ws: null, lastPong: 0 };
+const state = { axes: [], cfg: null, speed: 0.25, ws: null, lastPong: 0, gripperDragging: false };
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -80,6 +80,45 @@ function renderStatus(axes) {
   }
 }
 
+function renderGripper(g) {
+  if (!g || !g.enabled) return;
+  $("#gripper-pos").textContent = String(g.position ?? 0);
+  if (!state.gripperDragging) {
+    $("#gripper-slider").value = String(g.position ?? 0);
+  }
+}
+
+function initGripper() {
+  const g = state.cfg.gripper;
+  if (!g || !g.enabled) return;
+  $("#gripper-panel").classList.remove("hidden");
+  const slider = $("#gripper-slider");
+  slider.value = String(g.default_position ?? 0);
+  $("#gripper-pos").textContent = String(g.default_position ?? 0);
+
+  slider.addEventListener("pointerdown", () => { state.gripperDragging = true; });
+  slider.addEventListener("pointerup", () => { state.gripperDragging = false; });
+  slider.addEventListener("pointercancel", () => { state.gripperDragging = false; });
+  slider.addEventListener("input", () => {
+    $("#gripper-pos").textContent = slider.value;
+  });
+  slider.addEventListener("change", async () => {
+    try {
+      await api("/api/gripper", { method: "POST", body: { position: parseInt(slider.value, 10) } });
+    } catch (e) {
+      setStatus("gripper err: " + e.message, "text-red-400");
+    }
+  });
+  $("#gripper-open").addEventListener("click", async () => {
+    try { await api("/api/gripper/open", { method: "POST" }); }
+    catch (e) { setStatus("gripper err: " + e.message, "text-red-400"); }
+  });
+  $("#gripper-close").addEventListener("click", async () => {
+    try { await api("/api/gripper/close", { method: "POST" }); }
+    catch (e) { setStatus("gripper err: " + e.message, "text-red-400"); }
+  });
+}
+
 function renderConfig() {
   const host = $("#cfg-body");
   host.innerHTML = "";
@@ -130,7 +169,10 @@ function connectWs() {
   };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
-    if (msg.type === "state") renderStatus(msg.axes);
+    if (msg.type === "state") {
+      renderStatus(msg.axes);
+      renderGripper(msg.gripper);
+    }
     if (msg.type === "pong") state.lastPong = msg.t;
   };
   ws.onclose = () => {
@@ -155,6 +197,7 @@ async function init() {
     state.cfg = await api("/api/config");
     renderJogAxes();
     renderConfig();
+    initGripper();
     initTabs();
     connectWs();
 

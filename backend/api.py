@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .can_bus import autodetect_channel, open_bus
 from .config import AppConfig
+from .gripper import Gripper
 from .motion import LimitViolation, Motion
 
 log = logging.getLogger("arctos.api")
@@ -55,11 +56,16 @@ class CurrentReq(BaseModel):
     milliamps: int = Field(ge=0, le=5200)
 
 
+class GripperReq(BaseModel):
+    position: int = Field(ge=0, le=255)
+
+
 # ---------------- App wiring ----------------
 
 class AppState:
     cfg: AppConfig
     motion: Motion
+    gripper: Gripper
     last_heartbeat: float = 0.0
     ws_connected: int = 0
 
@@ -68,7 +74,12 @@ class AppState:
         channel = self.cfg.can.channel or (autodetect_channel() if self.cfg.can.backend == "slcan" else None)
         bus = open_bus(self.cfg.can.backend, channel=channel, bitrate=self.cfg.can.bitrate)
         self.motion = Motion(self.cfg, bus)
-        log.info("motion ready, backend=%s", self.cfg.can.backend)
+        self.gripper = Gripper(self.cfg.gripper, bus)
+        log.info(
+            "motion ready, backend=%s, gripper=%s",
+            self.cfg.can.backend,
+            "on" if self.cfg.gripper.enabled else "off",
+        )
 
 
 state: Optional[AppState] = None
@@ -94,15 +105,25 @@ def _motion() -> Motion:
     return state.motion
 
 
+def _gripper() -> Gripper:
+    assert state is not None
+    return state.gripper
+
+
 # ---------------- REST endpoints ----------------
 
 @app.get("/api/state")
 def get_state():
-    return {"axes": _motion().state_dict(), "backend": state.cfg.can.backend}
+    return {
+        "axes": _motion().state_dict(),
+        "gripper": _gripper().state_dict(),
+        "backend": state.cfg.can.backend,
+    }
 
 
 @app.get("/api/config")
 def get_config():
+    g = state.cfg.gripper
     return {
         "backend": state.cfg.can.backend,
         "axes": [
@@ -116,6 +137,11 @@ def get_config():
             }
             for ax in state.cfg.axes
         ],
+        "gripper": {
+            "enabled": g.enabled, "can_id": g.can_id,
+            "open_position": g.open_position, "close_position": g.close_position,
+            "default_position": g.default_position,
+        },
     }
 
 
@@ -180,6 +206,35 @@ def current(req: CurrentReq):
 def refresh():
     _motion().request_all_positions()
     return {"ok": True}
+
+
+# ---------------- Gripper ----------------
+
+@app.post("/api/gripper")
+def gripper_set(req: GripperReq):
+    try:
+        sent = _gripper().set_position(req.position)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"ok": True, "position": sent}
+
+
+@app.post("/api/gripper/open")
+def gripper_open():
+    try:
+        sent = _gripper().open()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"ok": True, "position": sent}
+
+
+@app.post("/api/gripper/close")
+def gripper_close():
+    try:
+        sent = _gripper().close()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"ok": True, "position": sent}
 
 
 # ---------------- WebSocket + watchdog ----------------
@@ -249,7 +304,11 @@ async def _watchdog_loop():
     while True:
         await asyncio.sleep(interval)
         try:
-            await hub.broadcast({"type": "state", "axes": _motion().state_dict()})
+            await hub.broadcast({
+                "type": "state",
+                "axes": _motion().state_dict(),
+                "gripper": _gripper().state_dict(),
+            })
             if state.ws_connected > 0:
                 stale = (time.monotonic() - state.last_heartbeat) > timeout_s
                 if stale:

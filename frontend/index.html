@@ -37,6 +37,18 @@
         <input id="speed" type="range" min="1" max="100" value="25" class="flex-1 accent-blue-500" />
         <span id="speed-val" class="text-sm w-10 text-right">25%</span>
       </div>
+
+      <div id="gripper-panel" class="hidden mt-2 bg-gray-900 rounded-lg p-2 flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <div class="text-xs uppercase tracking-wider text-gray-400 flex-1">Gripper</div>
+          <span id="gripper-pos" class="text-xs text-gray-400 pos">0</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="gripper-open" class="btn bg-gray-700 hover:bg-gray-600 rounded-lg px-3 py-2 text-sm font-semibold">Open</button>
+          <input id="gripper-slider" type="range" min="0" max="255" value="0" class="flex-1 accent-amber-500" />
+          <button id="gripper-close" class="btn bg-amber-600 hover:bg-amber-500 rounded-lg px-3 py-2 text-sm font-semibold">Close</button>
+        </div>
+      </div>
     </div>
 
     <!-- Right panel -->
