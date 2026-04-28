@@ -18,3 +18,15 @@ axes:
   - { can_id: 4, name: J4, gear_ratio: 48,   pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -180, soft_limit_max: 180, default_current_ma: 1600, default_microsteps: 16 }
   - { can_id: 5, name: J5, gear_ratio: 67.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 1600, default_microsteps: 16 }
   - { can_id: 6, name: J6, gear_ratio: 13.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -360, soft_limit_max: 360, default_current_ma: 1600, default_microsteps: 16 }
+
+# CAN-attached Arduino-driven servo gripper.
+# Wire format: 1 byte payload (0..255) on `can_id`; the MCU maps to servo travel.
+# Set `enabled: true` once the gripper firmware is flashed and the Arduino is
+# wired into the bus. Tune open_position / close_position to match the servo
+# travel that gives you the open/closed grip on your end-effector.
+gripper:
+  enabled: false
+  can_id: 0x07
+  open_position: 0
+  close_position: 255
+  default_position: 0

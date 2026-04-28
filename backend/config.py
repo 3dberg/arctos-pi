@@ -38,10 +38,23 @@ class ServerConfig:
 
 
 @dataclass
+class GripperConfig:
+    """CAN-attached Arduino-driven servo gripper. Wire format: 1 byte payload
+    (0..255) on `can_id`; the MCU maps to servo travel.
+    """
+    enabled: bool = False
+    can_id: int = 0x07
+    open_position: int = 0              # raw byte sent for "open"
+    close_position: int = 255           # raw byte sent for "close"
+    default_position: int = 0           # initial commanded position on boot
+
+
+@dataclass
 class AppConfig:
     can: CanConfig = field(default_factory=CanConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     axes: list[AxisConfig] = field(default_factory=list)
+    gripper: GripperConfig = field(default_factory=GripperConfig)
 
     @staticmethod
     def default_six_axis() -> "AppConfig":
@@ -57,9 +70,10 @@ class AppConfig:
         can = CanConfig(**raw.get("can", {}))
         server = ServerConfig(**raw.get("server", {}))
         axes = [AxisConfig(**a) for a in raw.get("axes", [])]
+        gripper = GripperConfig(**raw.get("gripper", {}))
         if not axes:
             axes = cls.default_six_axis().axes
-        return cls(can=can, server=server, axes=axes)
+        return cls(can=can, server=server, axes=axes, gripper=gripper)
 
     def axis_by_id(self, can_id: int) -> AxisConfig:
         for ax in self.axes:
