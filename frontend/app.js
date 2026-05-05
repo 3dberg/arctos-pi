@@ -328,12 +328,21 @@ function initGripper() {
   });
 }
 
+const WORK_MODES = [
+  { v: 5, label: "SR_vFOC (recommended)" },
+  { v: 4, label: "SR_CLOSE" },
+  { v: 3, label: "SR_OPEN" },
+  { v: 2, label: "CR_vFOC" },
+  { v: 1, label: "CR_CLOSE" },
+  { v: 0, label: "CR_OPEN" },
+];
+
 function renderConfig() {
   const host = $("#cfg-body");
   host.innerHTML = "";
   for (const ax of state.cfg.axes) {
     const card = document.createElement("div");
-    card.className = "bg-gray-900 rounded-lg p-3 flex items-center gap-3";
+    card.className = "bg-gray-900 rounded-lg p-3 flex flex-wrap items-center gap-3";
     card.innerHTML = `
       <div class="w-14 font-bold">${ax.name}</div>
       <div class="flex items-center gap-2">
@@ -349,6 +358,14 @@ function renderConfig() {
                class="cur-in bg-gray-800 rounded px-2 py-1 w-24" />
       </div>
       <button data-can="${ax.can_id}" class="apply-cfg ml-auto bg-amber-600 hover:bg-amber-500 rounded px-3 py-1 text-sm font-semibold">Apply</button>
+      <div class="basis-full flex items-center gap-2 pt-2 border-t border-gray-800">
+        <label class="text-xs text-gray-400 w-14">work mode</label>
+        <select data-can="${ax.can_id}" class="wm-sel bg-gray-800 rounded px-2 py-1">
+          ${WORK_MODES.map(m => `<option value="${m.v}">${m.label}</option>`).join("")}
+        </select>
+        <span class="text-xs text-gray-500">writes driver flash · jog needs SR_*</span>
+        <button data-can="${ax.can_id}" class="apply-wm ml-auto bg-red-700 hover:bg-red-600 rounded px-3 py-1 text-sm font-semibold">Set work mode</button>
+      </div>
     `;
     host.appendChild(card);
   }
@@ -363,6 +380,21 @@ function renderConfig() {
         setStatus(`axis ${can}: microsteps=${ms}, current=${cur}mA applied`, "text-emerald-400");
       } catch (e) {
         setStatus("apply failed: " + e.message, "text-red-400");
+      }
+    });
+  }
+  for (const b of $$(".apply-wm")) {
+    b.addEventListener("click", async () => {
+      const can = parseInt(b.dataset.can, 10);
+      const sel = document.querySelector(`.wm-sel[data-can="${can}"]`);
+      const mode = parseInt(sel.value, 10);
+      const label = sel.options[sel.selectedIndex].text;
+      if (!confirm(`Set axis ${can} work mode to ${label}?\n\nThis writes to the driver's flash and persists across power cycles.`)) return;
+      try {
+        await api("/api/work_mode", { method: "POST", body: { can_id: can, mode } });
+        setStatus(`axis ${can}: work mode → ${label}`, "text-emerald-400");
+      } catch (e) {
+        setStatus("work mode failed: " + e.message, "text-red-400");
       }
     });
   }

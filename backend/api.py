@@ -63,6 +63,11 @@ class CurrentReq(BaseModel):
     milliamps: int = Field(ge=0, le=5200)
 
 
+class WorkModeReq(BaseModel):
+    can_id: int = Field(ge=1, le=6)
+    mode: int = Field(ge=0, le=5)  # 0..2=CR_*, 3..5=SR_*; jog requires SR (mode 5 = SR_vFOC)
+
+
 class GripperReq(BaseModel):
     position: int = Field(ge=0, le=255)
 
@@ -283,6 +288,17 @@ def microsteps(req: MicrostepsReq):
 def current(req: CurrentReq):
     try:
         _motion().set_current(req.can_id, req.milliamps)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return {"ok": True}
+
+
+@app.post("/api/work_mode")
+def work_mode(req: WorkModeReq):
+    # Flash-persisting write (CMD 0x82). The UI confirms before calling
+    # this; jog needs SR_* (mode 5 = SR_vFOC), CR_* silently drops motion.
+    try:
+        _motion().set_work_mode(req.can_id, req.mode)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     return {"ok": True}

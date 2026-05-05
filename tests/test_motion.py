@@ -109,6 +109,16 @@ def test_dry_run_blocks_flash_writes():
     assert bus.sent[-1].data[0] == 0x84
 
 
+def test_set_work_mode_sends_cmd_82():
+    bus = MockBus()
+    m = Motion(_cfg(), bus)
+    m.set_work_mode(can_id=3, mode=5)  # SR_vFOC
+    f = bus.sent[-1]
+    assert f.arbitration_id == 3
+    assert f.data[0] == 0x82
+    assert f.data[1] == 5
+
+
 def test_set_microsteps_scales_pulses_per_rev():
     bus = MockBus()
     cfg = _cfg()
