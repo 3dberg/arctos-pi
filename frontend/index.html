@@ -44,9 +44,9 @@
           <span id="gripper-pos" class="text-xs text-gray-400 pos">0</span>
         </div>
         <div class="flex items-center gap-2">
-          <button id="gripper-open" class="btn bg-gray-700 hover:bg-gray-600 rounded-lg px-3 py-2 text-sm font-semibold">Open</button>
-          <input id="gripper-slider" type="range" min="0" max="255" value="0" class="flex-1 accent-amber-500" />
-          <button id="gripper-close" class="btn bg-amber-600 hover:bg-amber-500 rounded-lg px-3 py-2 text-sm font-semibold">Close</button>
+          <button id="gripper-close" class="btn bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg px-3 py-2 text-sm font-semibold">Close</button>
+          <input id="gripper-slider" type="range" min="0" max="255" value="0" class="flex-1 accent-amber-500 disabled:opacity-40 disabled:cursor-not-allowed" />
+          <button id="gripper-open" class="btn bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg px-3 py-2 text-sm font-semibold">Open</button>
         </div>
       </div>
     </div>

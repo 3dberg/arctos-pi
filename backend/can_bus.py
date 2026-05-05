@@ -110,12 +110,31 @@ class SocketCanBus:
         except ImportError as e:
             raise RuntimeError("python-can not installed; pip install python-can") from e
         self._can = can
-        self._bus = can.interface.Bus(bustype="socketcan", channel=channel)
+        self._channel = channel
+        self._bus_lock = threading.Lock()
+        self._bus = None  # type: ignore[assignment]
+        self._open_bus()
         self._callbacks: list[Callable[[Frame], None]] = []
         self._stop = threading.Event()
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True, name="can-rx")
         self._rx_thread.start()
         log.info("SocketCanBus opened on %s (kernel bitrate applies)", channel)
+
+    def _open_bus(self) -> None:
+        # Caller must hold _bus_lock (or be in __init__).
+        # Tear down the OLD bus first into a local, then try to open a new
+        # one; only on success do we assign self._bus. If Bus() raises we
+        # null self._bus so the next caller will try _open_bus again rather
+        # than reusing a half-dead socket (where send() raises ValueError on
+        # an fd=-1 socket instead of a recognizable CanError).
+        old = self._bus
+        self._bus = None
+        if old is not None:
+            try:
+                old.shutdown()
+            except Exception:
+                pass
+        self._bus = self._can.interface.Bus(bustype="socketcan", channel=self._channel)
 
     def send(self, frame: Frame) -> None:
         msg = self._can.Message(
@@ -123,14 +142,43 @@ class SocketCanBus:
             data=frame.data,
             is_extended_id=False,
         )
-        self._bus.send(msg, timeout=0.2)
+        try:
+            if self._bus is None:
+                raise OSError("CAN bus not open")
+            self._bus.send(msg, timeout=0.2)
+        except (self._can.exceptions.CanOperationError, OSError, ValueError) as e:
+            # Catch every shape of "socket is dead":
+            #   CanOperationError: python-can's typed wrapper around ENETDOWN
+            #     etc — kernel CAN interface went away.
+            #   OSError: raw errno paths (ENOBUFS, ENODEV, EBADF) that some
+            #     python-can versions don't wrap.
+            #   ValueError: hit when the socket fd has been closed and is now
+            #     -1 — select() rejects negative fds. Happens after a prior
+            #     reopen that itself failed.
+            # In all three, the right move is the same: try once to bring the
+            # bus back and replay the send, so the user gets seamless recovery
+            # the moment they `ip link set can0 up` (or replug the dongle).
+            log.warning("CAN send failed (%s: %s); attempting to reopen %s",
+                        type(e).__name__, e, self._channel)
+            with self._bus_lock:
+                self._open_bus()
+            self._bus.send(msg, timeout=0.2)
 
     def on_receive(self, callback: Callable[[Frame], None]) -> None:
         self._callbacks.append(callback)
 
     def _rx_loop(self) -> None:
         while not self._stop.is_set():
-            msg = self._bus.recv(timeout=0.1)
+            try:
+                if self._bus is None:
+                    time.sleep(0.5)
+                    continue
+                msg = self._bus.recv(timeout=0.1)
+            except (self._can.exceptions.CanError, OSError, ValueError):
+                # Same dead-socket cases as send(); just back off. The next
+                # send() will reopen the bus and recv() picks up from there.
+                time.sleep(0.5)
+                continue
             if msg is None:
                 continue
             f = Frame(arbitration_id=msg.arbitration_id, data=bytes(msg.data))
@@ -142,7 +190,10 @@ class SocketCanBus:
 
     def shutdown(self) -> None:
         self._stop.set()
-        self._bus.shutdown()
+        try:
+            self._bus.shutdown()
+        except Exception:
+            pass
 
 
 # ---------------- Mock backend ----------------

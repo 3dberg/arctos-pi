@@ -2,7 +2,7 @@
 
 const state = {
   axes: [], cfg: null, speed: 0.25, ws: null, lastPong: 0,
-  gripperDragging: false,
+  gripperHoldUntil: 0,
   teach: { count: 0, loaded_name: null, dirty: false, waypoints: [] },
 };
 const $ = (sel) => document.querySelector(sel);
@@ -65,7 +65,7 @@ function renderJogAxes() {
   }
 }
 
-function renderStatus(axes) {
+function renderStatus(axes, gripper) {
   const body = $("#status-body");
   body.innerHTML = "";
   for (const ax of state.cfg.axes) {
@@ -82,13 +82,31 @@ function renderStatus(axes) {
     const posEl = document.getElementById(`pos-${ax.can_id}`);
     if (posEl) posEl.textContent = (s.degrees ?? 0).toFixed(2) + "°";
   }
+  if (gripper && gripper.present) {
+    const tr = document.createElement("tr");
+    tr.className = "border-t border-gray-800";
+    tr.innerHTML = `
+      <td class="py-1">Gripper <span class="text-gray-500 text-xs">id ${gripper.can_id}</span></td>
+      <td class="text-right pos text-gray-600">—</td>
+      <td class="text-right pos text-gray-400">${gripper.position ?? 0}</td>
+      <td class="text-right">${gripper.enabled ? "✓" : "—"}</td>
+    `;
+    body.appendChild(tr);
+  }
 }
 
 function renderGripper(g) {
-  if (!g || !g.enabled) return;
-  $("#gripper-pos").textContent = String(g.position ?? 0);
-  if (!state.gripperDragging) {
-    $("#gripper-slider").value = String(g.position ?? 0);
+  if (!g || !g.present) return;
+  const slider = $("#gripper-slider");
+  $("#gripper-open").disabled = !g.enabled;
+  $("#gripper-close").disabled = !g.enabled;
+  slider.disabled = !g.enabled;
+  // Suppress slider sync briefly after any user interaction so a WS tick
+  // landing between pointerup and the backend processing our final POST
+  // can't snap the thumb back to a stale value.
+  if (Date.now() >= state.gripperHoldUntil) {
+    slider.value = String(g.position ?? 0);
+    $("#gripper-pos").textContent = String(g.position ?? 0);
   }
 }
 
@@ -253,18 +271,52 @@ function initGripper() {
   slider.value = String(g.default_position ?? 0);
   $("#gripper-pos").textContent = String(g.default_position ?? 0);
 
-  slider.addEventListener("pointerdown", () => { state.gripperDragging = true; });
-  slider.addEventListener("pointerup", () => { state.gripperDragging = false; });
-  slider.addEventListener("pointercancel", () => { state.gripperDragging = false; });
-  slider.addEventListener("input", () => {
-    $("#gripper-pos").textContent = slider.value;
-  });
-  slider.addEventListener("change", async () => {
+  let gripperLastSend = 0;
+  let gripperPending = null;
+  const HOLD_MS = 600; // suppress WS slider-sync this long after any touch
+  const holdSlider = () => { state.gripperHoldUntil = Date.now() + HOLD_MS; };
+  const sendGripper = async (v) => {
     try {
-      await api("/api/gripper", { method: "POST", body: { position: parseInt(slider.value, 10) } });
+      await api("/api/gripper", { method: "POST", body: { position: v } });
     } catch (e) {
       setStatus("gripper err: " + e.message, "text-red-400");
     }
+  };
+  const scheduleGripper = (v) => {
+    const now = Date.now();
+    const since = now - gripperLastSend;
+    if (since >= 50) {
+      gripperLastSend = now;
+      if (gripperPending) { clearTimeout(gripperPending); gripperPending = null; }
+      sendGripper(v);
+    } else {
+      if (gripperPending) clearTimeout(gripperPending);
+      gripperPending = setTimeout(() => {
+        gripperPending = null;
+        gripperLastSend = Date.now();
+        sendGripper(parseInt(slider.value, 10));
+      }, 50 - since);
+    }
+  };
+
+  slider.addEventListener("pointerdown", holdSlider);
+  const endDrag = () => {
+    holdSlider();
+    if (gripperPending) { clearTimeout(gripperPending); gripperPending = null; }
+    gripperLastSend = Date.now();
+    sendGripper(parseInt(slider.value, 10));
+  };
+  slider.addEventListener("pointerup", endDrag);
+  slider.addEventListener("pointercancel", endDrag);
+  slider.addEventListener("input", () => {
+    const v = parseInt(slider.value, 10);
+    $("#gripper-pos").textContent = String(v);
+    holdSlider();
+    scheduleGripper(v);
+  });
+  slider.addEventListener("change", () => {
+    holdSlider();
+    sendGripper(parseInt(slider.value, 10));
   });
   $("#gripper-open").addEventListener("click", async () => {
     try { await api("/api/gripper/open", { method: "POST" }); }
@@ -327,7 +379,7 @@ function connectWs() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "state") {
-      renderStatus(msg.axes);
+      renderStatus(msg.axes, msg.gripper);
       renderGripper(msg.gripper);
       renderTeachSummary(msg.teach);
     }

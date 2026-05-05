@@ -11,7 +11,9 @@ def _gripper(**overrides):
                         default_position=0)
     for k, v in overrides.items():
         setattr(cfg, k, v)
-    return Gripper(cfg, MockBus())
+    g = Gripper(cfg, MockBus())
+    g.set_enabled(True)
+    return g
 
 
 def test_set_position_sends_single_byte_frame():
@@ -51,10 +53,26 @@ def test_disabled_gripper_refuses_commands():
     assert g.bus.sent == []
 
 
+def test_runtime_disable_blocks_commands():
+    cfg = GripperConfig(enabled=True, can_id=0x07, open_position=0, close_position=255,
+                        default_position=0)
+    g = Gripper(cfg, MockBus())  # runtime _enabled defaults False, like motors
+    with pytest.raises(RuntimeError):
+        g.set_position(50)
+    assert g.bus.sent == []
+    g.set_enabled(True)
+    g.set_position(50)
+    assert g.bus.sent[-1].data == bytes([50])
+    g.set_enabled(False)
+    with pytest.raises(RuntimeError):
+        g.set_position(60)
+
+
 def test_state_dict_shape():
     g = _gripper(open_position=5, close_position=250)
     g.set_position(64)
     s = g.state_dict()
+    assert s["present"] is True
     assert s["enabled"] is True
     assert s["can_id"] == 0x07
     assert s["position"] == 64
