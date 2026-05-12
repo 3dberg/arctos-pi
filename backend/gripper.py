@@ -25,6 +25,7 @@ class Gripper:
     cfg: GripperConfig
     bus: CanBus
     _position: int = 0
+    _enabled: bool = False
     _lock: threading.Lock = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -35,10 +36,21 @@ class Gripper:
     def position(self) -> int:
         return self._position
 
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def set_enabled(self, on: bool) -> None:
+        with self._lock:
+            self._enabled = bool(on)
+        log.info("gripper %s", "enabled" if on else "disabled")
+
     def set_position(self, position: int) -> int:
         """Send a raw 0..255 position byte. Returns the clamped value sent."""
         if not self.cfg.enabled:
             raise RuntimeError("gripper is disabled in config")
+        if not self._enabled:
+            raise RuntimeError("gripper is disabled — press Enable")
         clamped = max(0, min(255, int(position)))
         self.bus.send(Frame(self.cfg.can_id, bytes([clamped])))
         with self._lock:
@@ -54,7 +66,8 @@ class Gripper:
 
     def state_dict(self) -> dict:
         return {
-            "enabled": self.cfg.enabled,
+            "present": self.cfg.enabled,
+            "enabled": self._enabled,
             "can_id": self.cfg.can_id,
             "position": self._position,
             "open_position": self.cfg.open_position,

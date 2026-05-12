@@ -8,10 +8,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+try:
+    from can.exceptions import CanError
+except ImportError:  # python-can not installed in mock-only test envs
+    class CanError(Exception):  # type: ignore[no-redef]
+        pass
 
 from .can_bus import autodetect_channel, open_bus
 from .config import AppConfig
@@ -55,6 +61,11 @@ class MicrostepsReq(BaseModel):
 class CurrentReq(BaseModel):
     can_id: int = Field(ge=1, le=6)
     milliamps: int = Field(ge=0, le=5200)
+
+
+class WorkModeReq(BaseModel):
+    can_id: int = Field(ge=1, le=6)
+    mode: int = Field(ge=0, le=5)  # 0..2=CR_*, 3..5=SR_*; jog requires SR (mode 5 = SR_vFOC)
 
 
 class GripperReq(BaseModel):
@@ -122,6 +133,49 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="arctos-pi", lifespan=lifespan)
 
 
+async def _can_unavailable_response(exc: BaseException) -> JSONResponse:
+    log.error("CAN bus error on request: %s: %s", type(exc).__name__, exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": (
+                f"CAN bus unavailable: {exc}. Bring it back up with: "
+                "`sudo ip link set can0 up type can bitrate 500000`. "
+                "The app will reconnect automatically."
+            )
+        },
+    )
+
+
+@app.exception_handler(CanError)
+async def _can_error_handler(_req: Request, exc: CanError):
+    """python-can's typed errors (CanOperationError, CanInterfaceNotImplemented,
+    etc.). Reached only when SocketCanBus.send's auto-reopen also failed.
+    """
+    return await _can_unavailable_response(exc)
+
+
+@app.exception_handler(OSError)
+async def _os_error_handler(_req: Request, exc: OSError):
+    """Raw kernel errors (ENETDOWN, ENODEV, EBADF) that some python-can
+    versions don't wrap. Same recovery story as CanError above.
+    """
+    return await _can_unavailable_response(exc)
+
+
+@app.exception_handler(ValueError)
+async def _value_error_handler(req: Request, exc: ValueError):
+    """select() against a closed CAN socket fd=-1 raises ValueError. Treat
+    it as a CAN-unavailable case ONLY when it came from the CAN stack —
+    a generic ValueError elsewhere should still get FastAPI's normal 500.
+    """
+    msg = str(exc)
+    if "file descriptor" in msg or "fd" in msg.lower():
+        return await _can_unavailable_response(exc)
+    log.exception("unhandled ValueError on %s", req.url.path)
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
 def _motion() -> Motion:
     assert state is not None
     return state.motion
@@ -183,6 +237,8 @@ def get_config():
 @app.post("/api/enable")
 def enable_all(req: EnableReq):
     _motion().enable_all(req.on)
+    if state.cfg.gripper.enabled:
+        _gripper().set_enabled(req.on)
     return {"ok": True}
 
 
@@ -232,6 +288,17 @@ def microsteps(req: MicrostepsReq):
 def current(req: CurrentReq):
     try:
         _motion().set_current(req.can_id, req.milliamps)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return {"ok": True}
+
+
+@app.post("/api/work_mode")
+def work_mode(req: WorkModeReq):
+    # Flash-persisting write (CMD 0x82). The UI confirms before calling
+    # this; jog needs SR_* (mode 5 = SR_vFOC), CR_* silently drops motion.
+    try:
+        _motion().set_work_mode(req.can_id, req.mode)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     return {"ok": True}
