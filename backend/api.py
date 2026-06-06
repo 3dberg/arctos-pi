@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +24,7 @@ from .can_bus import autodetect_channel, open_bus
 from .config import AppConfig
 from .gripper import Gripper
 from .motion import LimitViolation, Motion
+from .ros_client import RosClient, import_error, ros_available
 from .teach import TeachError, TeachRecorder
 
 log = logging.getLogger("arctos.api")
@@ -91,6 +93,15 @@ class ProgramNameReq(BaseModel):
     name: str = Field(min_length=1, max_length=64)
 
 
+class RosMoveReq(BaseModel):
+    joints_deg: dict[str, float]
+    duration_s: float = Field(3.0, gt=0.0, le=120.0)
+
+
+class RosRunReq(BaseModel):
+    seg_time_s: float = Field(2.0, gt=0.0, le=60.0)
+
+
 # ---------------- App wiring ----------------
 
 class AppState:
@@ -98,6 +109,7 @@ class AppState:
     motion: Motion
     gripper: Gripper
     teach: TeachRecorder
+    ros: Optional[RosClient] = None
     last_heartbeat: float = 0.0
     ws_connected: int = 0
 
@@ -108,11 +120,32 @@ class AppState:
         self.motion = Motion(self.cfg, bus)
         self.gripper = Gripper(self.cfg.gripper, bus)
         self.teach = TeachRecorder(motion=self.motion, gripper=self.gripper)
+        self.ros = self._maybe_start_ros()
         log.info(
-            "motion ready, backend=%s, gripper=%s",
+            "motion ready, backend=%s, gripper=%s, ros=%s",
             self.cfg.can.backend,
             "on" if self.cfg.gripper.enabled else "off",
+            "on" if self.ros else "off",
         )
+
+    def _maybe_start_ros(self) -> Optional[RosClient]:
+        """Start the optional in-process ROS2 client when ARCTOS_ROS is set and
+        rclpy is importable. Failure is non-fatal — the standard CAN control
+        path keeps working and the /api/ros/* endpoints report unavailability.
+        """
+        if not os.environ.get("ARCTOS_ROS"):
+            return None
+        if not ros_available():
+            log.warning("ARCTOS_ROS set but rclpy unavailable: %s", import_error())
+            return None
+        controller = os.environ.get("ARCTOS_ROS_CONTROLLER", "arctos_arm_controller")
+        try:
+            client = RosClient(controller_name=controller)
+            log.info("ROS2 client started (controller=%s)", controller)
+            return client
+        except Exception:
+            log.exception("ROS2 client failed to start")
+            return None
 
 
 state: Optional[AppState] = None
@@ -127,6 +160,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         watchdog.cancel()
+        if state.ros is not None:
+            state.ros.close()
         state.motion.bus.shutdown()
 
 
@@ -189,6 +224,18 @@ def _gripper() -> Gripper:
 def _teach() -> TeachRecorder:
     assert state is not None
     return state.teach
+
+
+def _ros() -> RosClient:
+    assert state is not None
+    if state.ros is None:
+        if not ros_available():
+            detail = f"ROS2 not available in this environment ({import_error()})."
+        else:
+            detail = ("ROS2 client not enabled. Start the server with ARCTOS_ROS=1 "
+                      "in a sourced ROS2 env, with the arctos_bridge node running.")
+        raise HTTPException(status_code=503, detail=detail)
+    return state.ros
 
 
 # ---------------- REST endpoints ----------------
@@ -308,6 +355,80 @@ def work_mode(req: WorkModeReq):
 def refresh():
     _motion().request_all_positions()
     return {"ok": True}
+
+
+# ---------------- ROS2 / MoveIt (optional) ----------------
+#
+# These wrap the in-process ROS2 client. They are additive: the standard CAN
+# control endpoints above keep working whether or not ROS is enabled. The
+# arctos_bridge node owns the CAN bus on a ROS deployment (single-owner rule),
+# so on the Pi these become the primary motion path and direct /api/move etc.
+# would be configured against a dry_run/disabled local bus.
+
+@app.get("/api/ros/status")
+def ros_status():
+    if state.ros is None:
+        return {
+            "available": False,
+            "enabled": False,
+            "rclpy": ros_available(),
+            "detail": import_error() if not ros_available() else "set ARCTOS_ROS=1 to enable",
+        }
+    try:
+        return {"available": True, "enabled": True, **state.ros.status()}
+    except Exception as e:  # pragma: no cover - needs a live ROS graph
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/api/ros/estop")
+def ros_estop():
+    try:
+        return _ros().estop()
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - needs a live ROS graph
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/api/ros/enable")
+def ros_enable(req: EnableReq):
+    try:
+        return _ros().enable(req.on)
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - needs a live ROS graph
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/api/ros/move")
+def ros_move(req: RosMoveReq):
+    """Joint-space move via the FollowJointTrajectory action (no collision
+    planning). Collision-aware MoveIt planning (MoveItPy) is a future endpoint.
+    """
+    try:
+        return _ros().move_to_joints(req.joints_deg, req.duration_s)
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - needs a live ROS graph
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/api/ros/run_program")
+def ros_run_program(req: RosRunReq):
+    """Replay the currently loaded/captured teach waypoints as a single timed
+    JointTrajectory through ROS2. Load a saved program first via /api/teach/load.
+    """
+    client = _ros()
+    joint_names = [ax.name for ax in state.cfg.axes]
+    waypoints = [{"joints": wp.joints, "dwell_ms": wp.dwell_ms} for wp in _teach().waypoints]
+    if not waypoints:
+        raise HTTPException(status_code=400, detail="no waypoints loaded")
+    try:
+        return client.run_waypoints(joint_names, waypoints, seg_time_s=req.seg_time_s)
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - needs a live ROS graph
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 # ---------------- Gripper ----------------

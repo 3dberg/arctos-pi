@@ -1,4 +1,9 @@
 # Copy to config.yaml and edit for your robot.
+
+# Robot model. The ROS2 layer (ros2_ws/src/arctos_robots) maps this to a
+# description / MoveIt bundle. The CAN control path ignores it.
+robot_type: arctos
+
 can:
   backend: mock          # socketcan | slcan | mock | dry_run
   # channel: 'can0' for socketcan (CANable Pro w/ gs_usb firmware — recommended),
@@ -11,6 +16,13 @@ server:
   port: 8000
   heartbeat_ms: 200
 
+# Per-axis. soft_limit_min/max double as the ROS2/MoveIt joint limits.
+# Optional ROS2-only fields (defaults shown if omitted):
+#   max_vel_deg_s: 90      joint velocity limit, deg/s  (-> MoveIt + URDF)
+#   max_acc_deg_s2: 180    joint acceleration limit, deg/s^2
+# After changing these, regenerate the ROS2 artifacts:
+#   python -m backend.ros_export --config config.yaml \
+#       --out ros2_ws/src/arctos_description/config/
 axes:
   - { can_id: 1, name: J1, gear_ratio: 13.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -180, soft_limit_max: 180, default_current_ma: 1600, default_microsteps: 16 }
   - { can_id: 2, name: J2, gear_ratio: 150,  pulses_per_rev: 3200, invert: true,  max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 2000, default_microsteps: 16 }

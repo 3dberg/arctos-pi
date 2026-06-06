@@ -411,6 +411,7 @@ function connectWs() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "state") {
+      state.axesLive = msg.axes;
       renderStatus(msg.axes, msg.gripper);
       renderGripper(msg.gripper);
       renderTeachSummary(msg.teach);
@@ -421,6 +422,89 @@ function connectWs() {
     setStatus("disconnected, retrying…", "text-yellow-400");
     setTimeout(connectWs, 1000);
   };
+}
+
+function moveitLog(msg, cls = "text-gray-400") {
+  const el = $("#moveit-log");
+  el.className = "text-xs font-mono whitespace-pre-wrap " + cls;
+  el.textContent = msg;
+}
+
+async function refreshRosStatus() {
+  const el = $("#ros-status");
+  try {
+    const s = await api("/api/ros/status");
+    if (s.enabled && s.available) {
+      const ready = s.action_server_ready ? "action server ready" : "waiting for action server";
+      el.className = "text-sm text-emerald-400";
+      el.textContent = `enabled — ${ready}`;
+      $("#moveit-move").disabled = false;
+      $("#moveit-run").disabled = false;
+    } else {
+      el.className = "text-sm text-yellow-400";
+      el.textContent = s.rclpy ? "not enabled (start server with ARCTOS_ROS=1)"
+                               : `unavailable: ${s.detail || "rclpy not installed"}`;
+      $("#moveit-move").disabled = true;
+      $("#moveit-run").disabled = true;
+    }
+  } catch (e) {
+    el.className = "text-sm text-red-400";
+    el.textContent = "status error: " + e.message;
+  }
+}
+
+function initMoveit() {
+  // Per-axis degree inputs.
+  const host = $("#moveit-joints");
+  host.innerHTML = "";
+  for (const ax of state.cfg.axes) {
+    const wrap = document.createElement("label");
+    wrap.className = "text-xs text-gray-400 flex items-center gap-1";
+    wrap.innerHTML = `${ax.name}
+      <input data-joint="${ax.name}" type="number" step="1"
+             min="${ax.soft_limit_min}" max="${ax.soft_limit_max}" value="0"
+             class="bg-gray-800 rounded px-2 py-1 w-20 text-sm" />`;
+    host.appendChild(wrap);
+  }
+
+  $("#moveit-fill").addEventListener("click", () => {
+    const live = state.axesLive || {};
+    for (const inp of $$("#moveit-joints input")) {
+      const s = live[inp.dataset.joint];
+      if (s) inp.value = (s.degrees ?? 0).toFixed(1);
+    }
+  });
+
+  $("#moveit-move").addEventListener("click", async () => {
+    const joints_deg = {};
+    for (const inp of $$("#moveit-joints input")) joints_deg[inp.dataset.joint] = parseFloat(inp.value) || 0;
+    const duration_s = parseFloat($("#moveit-duration").value) || 3;
+    moveitLog("sending joint goal…");
+    try {
+      const r = await api("/api/ros/move", { method: "POST", body: { joints_deg, duration_s } });
+      moveitLog(r.accepted ? `done (error_code=${r.error_code})`
+                           : `rejected: ${r.error_string}`,
+                r.accepted && r.error_code === 0 ? "text-emerald-400" : "text-yellow-400");
+    } catch (e) {
+      moveitLog("move failed: " + e.message, "text-red-400");
+    }
+  });
+
+  $("#moveit-run").addEventListener("click", async () => {
+    const seg_time_s = parseFloat($("#moveit-segtime").value) || 2;
+    moveitLog("running loaded program…");
+    try {
+      const r = await api("/api/ros/run_program", { method: "POST", body: { seg_time_s } });
+      moveitLog(r.accepted ? `program done (error_code=${r.error_code})`
+                           : `rejected: ${r.error_string}`,
+                r.accepted && r.error_code === 0 ? "text-emerald-400" : "text-yellow-400");
+    } catch (e) {
+      moveitLog("run failed: " + e.message, "text-red-400");
+    }
+  });
+
+  $("#ros-refresh").addEventListener("click", refreshRosStatus);
+  refreshRosStatus();
 }
 
 function initTabs() {
@@ -441,6 +525,7 @@ async function init() {
     renderConfig();
     initGripper();
     initTeach();
+    initMoveit();
     initTabs();
     connectWs();
 

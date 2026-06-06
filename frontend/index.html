@@ -56,6 +56,7 @@
       <div class="flex gap-1 p-2 bg-gray-900 border-b border-gray-800">
         <button data-tab="status" class="tabbtn active rounded px-4 py-2 text-sm">Status</button>
         <button data-tab="teach" class="tabbtn rounded px-4 py-2 text-sm">Teach</button>
+        <button data-tab="moveit" class="tabbtn rounded px-4 py-2 text-sm">Motion / MoveIt</button>
         <button data-tab="config" class="tabbtn rounded px-4 py-2 text-sm">Driver config</button>
       </div>
       <div id="tab-status" class="tabpanel flex-1 p-3 overflow-auto">
@@ -96,6 +97,42 @@
           <button id="teach-load" class="btn bg-amber-600 hover:bg-amber-500 rounded px-3 py-1 text-sm font-semibold">Load</button>
           <button id="teach-delete-prog" class="btn bg-red-700 hover:bg-red-600 rounded px-3 py-1 text-sm">Delete file</button>
         </div>
+       </div>
+      </div>
+      <div id="tab-moveit" class="tabpanel flex-1 p-3 overflow-auto hidden">
+       <div class="flex flex-col gap-3">
+        <!-- ROS availability -->
+        <div class="bg-gray-900 rounded-lg p-3 flex items-center gap-3">
+          <span class="text-xs uppercase tracking-wider text-gray-400">ROS2 bridge</span>
+          <span id="ros-status" class="text-sm text-gray-400">checking…</span>
+          <button id="ros-refresh" class="ml-auto btn bg-gray-700 hover:bg-gray-600 rounded px-3 py-1 text-sm">Refresh</button>
+        </div>
+        <!-- Joint goal -->
+        <div class="bg-gray-900 rounded-lg p-3 flex flex-col gap-2">
+          <div class="text-xs uppercase tracking-wider text-gray-400">Joint goal (degrees)</div>
+          <div id="moveit-joints" class="grid grid-cols-3 gap-2"></div>
+          <div class="flex items-center gap-3 mt-1">
+            <label class="text-xs text-gray-400 flex items-center gap-1">
+              duration s
+              <input id="moveit-duration" type="number" min="0.5" max="120" step="0.5" value="3"
+                     class="bg-gray-800 rounded px-2 py-1 w-20 text-sm" />
+            </label>
+            <button id="moveit-fill" class="btn bg-gray-700 hover:bg-gray-600 rounded px-3 py-1 text-sm">Use current</button>
+            <button id="moveit-move" class="ml-auto btn bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded px-4 py-2 text-sm font-semibold">Move (joint goal)</button>
+          </div>
+        </div>
+        <!-- Program run -->
+        <div class="bg-gray-900 rounded-lg p-3 flex flex-wrap items-center gap-3">
+          <div class="text-xs uppercase tracking-wider text-gray-400">Run loaded program</div>
+          <span class="text-xs text-gray-500">(load one in the Teach tab)</span>
+          <label class="text-xs text-gray-400 flex items-center gap-1">
+            seg s
+            <input id="moveit-segtime" type="number" min="0.5" max="60" step="0.5" value="2"
+                   class="bg-gray-800 rounded px-2 py-1 w-16 text-sm" />
+          </label>
+          <button id="moveit-run" class="ml-auto btn bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 rounded px-4 py-2 text-sm font-semibold">Run program</button>
+        </div>
+        <div id="moveit-log" class="text-xs text-gray-400 font-mono whitespace-pre-wrap"></div>
        </div>
       </div>
       <div id="tab-config" class="tabpanel flex-1 p-3 overflow-auto hidden">

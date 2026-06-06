@@ -1,7 +1,13 @@
 # arctos-pi
 
 Offline GUI + CAN controller for the Arctos 6-axis robot. Talks directly to
-MKS SERVO42D / SERVO57D closed-loop stepper drivers over CAN — no ROS.
+MKS SERVO42D / SERVO57D closed-loop stepper drivers over CAN.
+
+An **optional ROS2 + MoveIt2 layer** sits on top of the same control code so
+the arm can be planned with collision awareness and, later, driven by AI
+agents over a clean ROS2 action/topic surface — see
+[ROS2 / MoveIt2](#ros2--moveit2-optional). The core stack still runs
+standalone with zero ROS installed.
 
 Designed to run on **Raspberry Pi 5** with a 7" HDMI touchscreen, and on
 **x86_64 Linux** for development (with a mock CAN bus).
@@ -112,6 +118,71 @@ watchdog that stops all jogs if the browser drops off. These are
 complements to — not replacements for — a physical E-stop wired into
 motor power.
 
+## ROS2 / MoveIt2 (optional)
+
+The `ros2_ws/` colcon workspace adds a ROS2 layer **on top of** the existing
+Python control stack — it does not replace it. The tested `backend/mks.py`,
+`backend/can_bus.py`, and `backend/motion.py` stay the single source of truth;
+ROS2 reuses them.
+
+```
+ touchscreen / browser ─ HTTP+WS ─▶ FastAPI (backend/api.py)
+                                       │  optional in-process rclpy client
+                                       ▼
+   /joint_states ◀── arctos_bridge ──▶ Motion ─▶ CanBus ─▶ MKS/CAN
+   move_group (MoveIt2) ──FollowJointTrajectory──▶ arctos_bridge
+```
+
+Packages (`ros2_ws/src/`):
+
+| Package | Role |
+|---|---|
+| `arctos_description` | URDF/xacro (primitive geometry); joint limits generated from `config.yaml` |
+| `arctos_bridge` | rclpy node: serves `/joint_states` + `FollowJointTrajectory` + estop/enable, reusing `Motion` |
+| `arctos_moveit_config` | SRDF, kinematics, OMPL, move_group + RViz launches |
+| `arctos_bringup` | controller config + sim / real / demo launches |
+| `arctos_robots` | robot-type registry (maps `robot_type` → its bundle) |
+
+**Single source of truth.** Joint names and limits live in `config.yaml`.
+Regenerate the ROS2 artifacts whenever it changes:
+
+```bash
+python -m backend.ros_export --config config.yaml \
+    --out ros2_ws/src/arctos_description/config/
+```
+
+**Why a bridge node, not a `ros2_control` hardware interface?** ros2_control
+hardware plugins are loaded via pluginlib (C++ shared libraries), so the tested
+Python MKS/CAN stack can't be a hardware plugin directly. The `arctos_bridge`
+node wraps it and serves the same `FollowJointTrajectory` action MoveIt drives,
+so the MoveIt config is identical whether execution goes through the bridge
+(real Python stack) or a `joint_trajectory_controller` backed by
+`mock_components` (pure sim). A native C++ `SystemInterface` remains a future
+option.
+
+**Single CAN owner.** On a ROS2 deployment the `arctos_bridge` node owns the
+CAN bus. The FastAPI server then talks to the robot as a ROS2 *client* (start
+it with `ARCTOS_ROS=1` in a sourced ROS2 env); its `/api/ros/*` endpoints back
+the **Motion / MoveIt** tab in the touchscreen UI. Do not run two processes
+that both open the bus on real hardware.
+
+### Dev quick start (x86, no hardware)
+
+```bash
+sudo apt install ros-jazzy-desktop ros-jazzy-moveit ros-jazzy-ros2-control \
+  ros-jazzy-ros2-controllers python3-colcon-common-extensions python3-rosdep
+source /opt/ros/jazzy/setup.bash
+pip install -e .                      # expose `backend` to ROS nodes
+
+cd ros2_ws && colcon build --symlink-install && source install/setup.bash
+ros2 launch arctos_description view_robot.launch.py     # see the arm in RViz
+ros2 launch arctos_bringup demo.launch.py               # bridge + MoveIt + RViz (MockBus)
+#   in RViz MotionPlanning: set a goal -> Plan -> Execute
+```
+
+ROS2 distro: **Jazzy** (Ubuntu 24.04 LTS) is the target. The Pi runs the same
+launches with `can.backend: socketcan` / `channel: can0`.
+
 ## Roadmap
 
 - [x] 1. MKS protocol module + tests
@@ -120,6 +191,9 @@ motor power.
 - [x] 4. Teach / record + program JSON format
 - [ ] 5. Program queue + legacy `.tap` / `.txt` loader *(scaffolded in `backend/programs.py`)*
 - [x] 6. Install script + systemd user unit + chromium kiosk
+- [~] 7. ROS2 + MoveIt2 layer *(ros2_ws/: description, bridge, MoveIt config,
+      robot registry; FastAPI ROS client + Motion/MoveIt UI tab). Authored;
+      build/run validation on a ROS2 (Jazzy) box and Pi deployment pending.*
 
 ### Phase 4 — Teach / Record (done)
 
