@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!--
+  Top-level Arctos description. Composes the geometry macro and the
+  <ros2_control> block. Intended to be loaded via xacro from launch files:
+
+    xacro arctos.urdf.xacro use_mock_components:=true
+    xacro arctos.urdf.xacro use_mock_components:=false can_backend:=mock \
+          config_path:=/home/user/arctos-pi/config.yaml
+-->
+<robot name="arctos" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="prefix" default=""/>
+  <xacro:arg name="use_mock_components" default="true"/>
+  <xacro:arg name="can_backend" default="mock"/>
+  <xacro:arg name="config_path" default=""/>
+  <xacro:arg name="joints_file"
+             default="$(find arctos_description)/config/arctos_joints.yaml"/>
+
+  <xacro:include filename="$(find arctos_description)/urdf/arctos_macro.xacro"/>
+  <xacro:include filename="$(find arctos_description)/urdf/arctos.ros2_control.xacro"/>
+
+  <!-- Fixed world anchor so MoveIt has a stable planning frame. -->
+  <link name="world"/>
+  <joint name="world_to_base" type="fixed">
+    <parent link="world"/>
+    <child link="$(arg prefix)base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:arctos_arm prefix="$(arg prefix)" joints_file="$(arg joints_file)"/>
+
+  <xacro:arctos_ros2_control
+    prefix="$(arg prefix)"
+    joints_file="$(arg joints_file)"
+    use_mock_components="$(arg use_mock_components)"
+    can_backend="$(arg can_backend)"
+    config_path="$(arg config_path)"/>
+
+</robot>

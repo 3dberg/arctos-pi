@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<!--
+  <ros2_control> block for the Arctos arm.
+
+  Hardware plugin selected by the `use_mock_components` arg:
+
+    true  -> mock_components/GenericSystem: pure kinematic loopback, no CAN,
+             no arctos-pi backend. This is the supported ros2_control path and
+             is used to validate the URDF/MoveIt plumbing in isolation (M2).
+
+    false -> arctos_hardware/ArctosSystem: RESERVED for a future *C++*
+             ros2_control SystemInterface. ros2_control hardware plugins are
+             loaded via pluginlib (C++ shared libraries), so the tested Python
+             MKS/CAN stack cannot be a hardware plugin directly. Until that
+             C++ interface exists, the real-hardware path reuses the Python
+             backend through the `arctos_bridge` rclpy node instead (it hosts
+             the same FollowJointTrajectory action MoveIt drives). The
+             can_backend / config_path params below are forwarded for that
+             future plugin.
+
+  Joint command/state interfaces are position-only (the MKS drivers are
+  position-controlled); velocity state is published best-effort by the system.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="arctos_ros2_control"
+               params="prefix joints_file use_mock_components:=true
+                       can_backend:=mock config_path:=''">
+
+    <xacro:property name="jspec" value="${xacro.load_yaml(joints_file)}"/>
+    <xacro:property name="joints" value="${jspec['joints']}"/>
+
+    <ros2_control name="ArctosSystem" type="system">
+      <hardware>
+        <xacro:if value="${use_mock_components}">
+          <plugin>mock_components/GenericSystem</plugin>
+        </xacro:if>
+        <xacro:unless value="${use_mock_components}">
+          <plugin>arctos_hardware/ArctosSystem</plugin>
+          <param name="can_backend">${can_backend}</param>
+          <param name="config_path">${config_path}</param>
+        </xacro:unless>
+      </hardware>
+
+      <xacro:macro name="joint_iface" params="jname">
+        <joint name="${prefix}${jname}">
+          <command_interface name="position">
+            <param name="min">${joints[jname]['lower']}</param>
+            <param name="max">${joints[jname]['upper']}</param>
+          </command_interface>
+          <state_interface name="position"/>
+          <state_interface name="velocity"/>
+        </joint>
+      </xacro:macro>
+
+      <xacro:joint_iface jname="J1"/>
+      <xacro:joint_iface jname="J2"/>
+      <xacro:joint_iface jname="J3"/>
+      <xacro:joint_iface jname="J4"/>
+      <xacro:joint_iface jname="J5"/>
+      <xacro:joint_iface jname="J6"/>
+    </ros2_control>
+
+  </xacro:macro>
+</robot>

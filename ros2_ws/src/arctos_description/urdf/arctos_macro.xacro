@@ -1,0 +1,115 @@
+<?xml version="1.0"?>
+<!--
+  Arctos 6-axis arm macro.
+
+  GEOMETRY IS APPROXIMATE: links are primitive cylinders/boxes and the link
+  lengths/axes are placeholders chosen to give a self-consistent 6R serial
+  chain that MoveIt can plan over. Replace with real meshes / DH parameters
+  when available — the joint topology and the generated limits stay valid.
+
+  Joint limit values are NOT hand-authored: they come from
+  config/arctos_joints.yaml, which backend.ros_export generates from the
+  arctos-pi config (config.yaml). Regenerate after editing the config by
+  running "python -m backend.ros_export" (see that module's docstring).
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="arctos_arm" params="prefix joints_file">
+
+    <!-- Load the generated joint spec (radian limits + velocities). -->
+    <xacro:property name="jspec" value="${xacro.load_yaml(joints_file)}"/>
+    <xacro:property name="joints" value="${jspec['joints']}"/>
+
+    <material name="arctos_grey">
+      <color rgba="0.55 0.57 0.60 1.0"/>
+    </material>
+    <material name="arctos_accent">
+      <color rgba="0.10 0.45 0.80 1.0"/>
+    </material>
+
+    <!-- A primitive cylindrical link of given length along +Z. -->
+    <xacro:macro name="seg_link" params="name length radius:=0.04 material:=arctos_grey">
+      <link name="${name}">
+        <visual>
+          <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+          <geometry><cylinder length="${length}" radius="${radius}"/></geometry>
+          <material name="${material}"/>
+        </visual>
+        <collision>
+          <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+          <geometry><cylinder length="${length}" radius="${radius}"/></geometry>
+        </collision>
+        <inertial>
+          <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
+          <mass value="0.5"/>
+          <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+        </inertial>
+      </link>
+    </xacro:macro>
+
+    <!-- A revolute joint whose limits are read from the generated spec. -->
+    <xacro:macro name="rev_joint" params="name parent child axis_xyz origin_xyz">
+      <joint name="${prefix}${name}" type="revolute">
+        <parent link="${parent}"/>
+        <child link="${child}"/>
+        <origin xyz="${origin_xyz}" rpy="0 0 0"/>
+        <axis xyz="${axis_xyz}"/>
+        <limit
+          lower="${joints[name]['lower']}"
+          upper="${joints[name]['upper']}"
+          velocity="${joints[name]['velocity']}"
+          effort="${joints[name]['effort']}"/>
+      </joint>
+    </xacro:macro>
+
+    <!-- World-anchored base. -->
+    <link name="${prefix}base_link">
+      <visual>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <geometry><box size="0.16 0.16 0.05"/></geometry>
+        <material name="arctos_accent"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <geometry><box size="0.16 0.16 0.05"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="1.0"/>
+        <inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.005"/>
+      </inertial>
+    </link>
+
+    <!-- Links (approximate lengths, metres). -->
+    <xacro:seg_link name="${prefix}link1" length="0.12" radius="0.05"/>
+    <xacro:seg_link name="${prefix}link2" length="0.18" radius="0.04"/>
+    <xacro:seg_link name="${prefix}link3" length="0.16" radius="0.035"/>
+    <xacro:seg_link name="${prefix}link4" length="0.10" radius="0.03"/>
+    <xacro:seg_link name="${prefix}link5" length="0.08" radius="0.028"/>
+    <xacro:seg_link name="${prefix}link6" length="0.05" radius="0.025"/>
+
+    <!-- Tool flange. -->
+    <link name="${prefix}tool0"/>
+
+    <!-- Serial chain. Axes: J1 base yaw (Z), J2/J3 pitch (Y),
+         J4 roll (Z), J5 pitch (Y), J6 roll (Z). -->
+    <xacro:rev_joint name="J1" parent="${prefix}base_link" child="${prefix}link1"
+                     axis_xyz="0 0 1" origin_xyz="0 0 0.05"/>
+    <xacro:rev_joint name="J2" parent="${prefix}link1" child="${prefix}link2"
+                     axis_xyz="0 1 0" origin_xyz="0 0 0.12"/>
+    <xacro:rev_joint name="J3" parent="${prefix}link2" child="${prefix}link3"
+                     axis_xyz="0 1 0" origin_xyz="0 0 0.18"/>
+    <xacro:rev_joint name="J4" parent="${prefix}link3" child="${prefix}link4"
+                     axis_xyz="0 0 1" origin_xyz="0 0 0.16"/>
+    <xacro:rev_joint name="J5" parent="${prefix}link4" child="${prefix}link5"
+                     axis_xyz="0 1 0" origin_xyz="0 0 0.10"/>
+    <xacro:rev_joint name="J6" parent="${prefix}link5" child="${prefix}link6"
+                     axis_xyz="0 0 1" origin_xyz="0 0 0.08"/>
+
+    <joint name="${prefix}tool0_fixed" type="fixed">
+      <parent link="${prefix}link6"/>
+      <child link="${prefix}tool0"/>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    </joint>
+
+  </xacro:macro>
+</robot>

@@ -1,0 +1,31 @@
+# ros2_control controllers for the PURE-SIM path (mock_components/GenericSystem).
+# The controller name `arctos_arm_controller` matches the action name the
+# arctos_bridge node serves on the real-hardware path, so MoveIt's
+# moveit_controllers.yaml works unchanged for both.
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    arctos_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+arctos_arm_controller:
+  ros__parameters:
+    joints:
+      - J1
+      - J2
+      - J3
+      - J4
+      - J5
+      - J6
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    allow_partial_joints_goal: false
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0

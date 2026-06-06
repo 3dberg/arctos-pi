@@ -1,0 +1,11 @@
+# Robot manifest for the Arctos 6-axis arm.
+# Entries are 'package:relative/path' references resolved by the registry.
+robot_type: arctos
+description_xacro: arctos_description:urdf/arctos.urdf.xacro
+srdf: arctos_moveit_config:config/arctos.srdf
+controllers_yaml: arctos_bringup:config/controllers.yaml
+moveit_controllers: arctos_moveit_config:config/moveit_controllers.yaml
+kinematics: arctos_moveit_config:config/kinematics.yaml
+joint_limits: arctos_moveit_config:config/joint_limits.yaml
+ompl_planning: arctos_moveit_config:config/ompl_planning.yaml
+planning_group: arm

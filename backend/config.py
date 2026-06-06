@@ -21,6 +21,10 @@ class AxisConfig:
     soft_limit_max: float = 360.0
     default_current_ma: int = 1600      # for SERVO42D clamp at 3000; 57D at 5200
     default_microsteps: int = 16
+    # ROS2 / MoveIt joint limits at the output shaft. Used only by the ROS2
+    # export (backend/ros_export.py); the CAN control path ignores them.
+    max_vel_deg_s: float = 90.0         # joint velocity limit, deg/s
+    max_acc_deg_s2: float = 180.0       # joint acceleration limit, deg/s^2
 
 
 @dataclass
@@ -55,6 +59,10 @@ class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     axes: list[AxisConfig] = field(default_factory=list)
     gripper: GripperConfig = field(default_factory=GripperConfig)
+    # Selects the robot model. The ROS2 launch/registry layer maps this to a
+    # description / MoveIt bundle (see ros2_ws/src/arctos_robots). The CAN
+    # control path is robot-agnostic and only uses `axes`.
+    robot_type: str = "arctos"
 
     @staticmethod
     def default_six_axis() -> "AppConfig":
@@ -71,9 +79,10 @@ class AppConfig:
         server = ServerConfig(**raw.get("server", {}))
         axes = [AxisConfig(**a) for a in raw.get("axes", [])]
         gripper = GripperConfig(**raw.get("gripper", {}))
+        robot_type = raw.get("robot_type", "arctos")
         if not axes:
             axes = cls.default_six_axis().axes
-        return cls(can=can, server=server, axes=axes, gripper=gripper)
+        return cls(can=can, server=server, axes=axes, gripper=gripper, robot_type=robot_type)
 
     def axis_by_id(self, can_id: int) -> AxisConfig:
         for ax in self.axes:

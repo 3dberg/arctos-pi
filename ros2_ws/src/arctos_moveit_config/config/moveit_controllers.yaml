@@ -1,0 +1,21 @@
+# Binds MoveIt execution to the FollowJointTrajectory action named
+# /arctos_arm_controller/follow_joint_trajectory. That action is served by
+# EITHER the ros2_control joint_trajectory_controller (pure-sim path) OR the
+# arctos_bridge node (real Python stack) — MoveIt does not care which.
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - arctos_arm_controller
+
+  arctos_arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - J1
+      - J2
+      - J3
+      - J4
+      - J5
+      - J6

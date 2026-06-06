@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Semantic description for the Arctos 6-axis arm.
+
+  Hand-authored starter SRDF. For a refined self-collision matrix, regenerate
+  with the MoveIt Setup Assistant against arctos_description/urdf/arctos.urdf.xacro
+  once real link geometry/meshes are in place.
+-->
+<robot name="arctos">
+
+  <group name="arm">
+    <chain base_link="base_link" tip_link="tool0"/>
+  </group>
+
+  <group_state name="home" group="arm">
+    <joint name="J1" value="0"/>
+    <joint name="J2" value="0"/>
+    <joint name="J3" value="0"/>
+    <joint name="J4" value="0"/>
+    <joint name="J5" value="0"/>
+    <joint name="J6" value="0"/>
+  </group_state>
+
+  <group_state name="ready" group="arm">
+    <joint name="J1" value="0"/>
+    <joint name="J2" value="-0.5"/>
+    <joint name="J3" value="0.8"/>
+    <joint name="J4" value="0"/>
+    <joint name="J5" value="0.7"/>
+    <joint name="J6" value="0"/>
+  </group_state>
+
+  <!-- Adjacent links never collide; disable those checks. -->
+  <disable_collisions link1="base_link" link2="link1" reason="Adjacent"/>
+  <disable_collisions link1="link1" link2="link2" reason="Adjacent"/>
+  <disable_collisions link1="link2" link2="link3" reason="Adjacent"/>
+  <disable_collisions link1="link3" link2="link4" reason="Adjacent"/>
+  <disable_collisions link1="link4" link2="link5" reason="Adjacent"/>
+  <disable_collisions link1="link5" link2="link6" reason="Adjacent"/>
+  <!-- Near-base links rarely reach each other; disable to avoid false positives. -->
+  <disable_collisions link1="base_link" link2="link2" reason="Never"/>
+  <disable_collisions link1="link1" link2="link3" reason="Never"/>
+
+</robot>
