@@ -3,9 +3,10 @@
 <package format="3">
   <name>arctos_description</name>
   <version>0.1.0</version>
-  <description>URDF/xacro description for the Arctos 6-axis arm. Geometry is
-    approximate (primitive links, no meshes yet); joint limits are generated
-    from the arctos-pi config via backend.ros_export.</description>
+  <description>URDF/xacro description for the Arctos 6-axis arm. Geometry uses
+    the real CAD STL meshes (ported from the legacy ROS1 arctos_urdf_description,
+    mm-scale); joint limits are generated from the arctos-pi config via
+    backend.ros_export.</description>
   <maintainer email="tencho.tenchev@3dberg.com">3dberg</maintainer>
   <license>TBD</license>
 

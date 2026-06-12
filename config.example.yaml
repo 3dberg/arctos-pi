@@ -10,12 +10,29 @@ can:
   #         '/dev/ttyACM0' for slcan (CANable firmware), null = autodetect slcan
   channel: null
   bitrate: 500000
+  # socketcan tip: the kernel CAN tx queue defaults to ~10 frames. The app
+  # serializes + paces transmits so it stays near-empty, but for headroom when
+  # homing while polling, bump txqueuelen and enable bus-off auto-recovery
+  # (restart-ms) when you bring the interface up:
+  #   sudo ip link set can0 up type can bitrate 500000 restart-ms 100
+  #   sudo ip link set can0 txqueuelen 1000
 
 server:
   host: 0.0.0.0
   port: 8000
   heartbeat_ms: 200
 
+# Safety gate: refuse absolute moves (Move-to / MoveIt joint goals / program
+# replay) for any home_enabled axis that hasn't been homed yet. Manual jog stays
+# available so you can reach the switch. Set false for bench bring-up before the
+# per-axis homing params below are tuned.
+require_home_before_move: true
+
+# gear_ratio (output turns per motor turn) and pulses_per_rev set the deg<->pulse
+# scaling. If MoveIt/jog motion doesn't match the real robot, tune gear_ratio LIVE
+# from the Driver-config tab (software-only, not flashed, not saved) until a
+# commanded move matches reality, then copy the value back here.
+#
 # Per-axis. soft_limit_min/max double as the ROS2/MoveIt joint limits.
 # Optional ROS2-only fields (defaults shown if omitted):
 #   max_vel_deg_s: 90      joint velocity limit, deg/s  (-> MoveIt + URDF)
@@ -23,13 +40,64 @@ server:
 # After changing these, regenerate the ROS2 artifacts:
 #   python -m backend.ros_export --config config.yaml \
 #       --out ros2_ws/src/arctos_description/config/
+#
+# Homing (driver-native GoHome, MKS 0x90/0x91). Per-axis fields (defaults shown):
+#   home_enabled:     true    axis has a home sensor and must be homed first
+#   home_dir:         0        seek direction 0=CW 1=CCW (RAW driver dir; flip on the
+#                              bench if the seek runs AWAY from the switch)
+#   home_speed:       200      seek speed, 0..4095 driver units (keep modest)
+#   home_trig_low:    true     reverse/active-low switch (tripped reads electrical 0).
+#                              Verify with the IO read (POST /api/io) before homing.
+#   home_offset_deg:  0.0      the TRUE joint angle AT the home switch. With 0 the UI
+#                              reports travel-from-the-switch, not joint angles. Calibrate
+#                              from the Driver-config tab: home, jog the joint to a known
+#                              pose (e.g. its zero), enter that true angle, press
+#                              "Calibrate zero" (software-only), then copy the reported
+#                              home_offset_deg back here.
+#   home_seek_max_deg: 400.0   abort + e-stop if a seek travels past this (mis-wire guard)
+#   home_backoff_deg: 30.0     if the switch is already active, back off up to this far to clear
+#                              it before GoHome (the driver won't seek when starting on it); 0 disables
+#   home_order:       0        Home-All sequence; lower runs first (e.g. shoulder before wrist)
+#   end_limit:        true     enable the driver's own limit feature (0x90 endLimit)
+#   home_use_driver_params: false  if an axis homes fine from the MKS panel but not the
+#                              UI, set true: we then only trigger GoHome with the driver's
+#                              own flashed params (no 0x90 overwrite, no back-off)
+#
+# Driver work mode / holding current (flash-persisting, applied ONCE at startup):
+#   default_work_mode: null    0=CR_OPEN 1=CR_CLOSE 2=CR_vFOC 3=SR_OPEN 4=SR_CLOSE 5=SR_vFOC.
+#                              null = leave the driver's flashed mode as-is. Set 5 (SR_vFOC)
+#                              to stop open-loop hum/heat on an axis that drifted to a non-FOC
+#                              mode. Also live-settable from the UI (ROS mode routes it to the bridge).
+#   hold_current_ma:  null     optional reduced holding current; null = use default_current_ma
 axes:
-  - { can_id: 1, name: J1, gear_ratio: 13.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -180, soft_limit_max: 180, default_current_ma: 1600, default_microsteps: 16 }
-  - { can_id: 2, name: J2, gear_ratio: 150,  pulses_per_rev: 3200, invert: true,  max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 2000, default_microsteps: 16 }
-  - { can_id: 3, name: J3, gear_ratio: 150,  pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 2000, default_microsteps: 16 }
-  - { can_id: 4, name: J4, gear_ratio: 48,   pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -180, soft_limit_max: 180, default_current_ma: 1600, default_microsteps: 16 }
-  - { can_id: 5, name: J5, gear_ratio: 67.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 1600, default_microsteps: 16 }
-  - { can_id: 6, name: J6, gear_ratio: 13.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -360, soft_limit_max: 360, default_current_ma: 1600, default_microsteps: 16 }
+  - { can_id: 1, name: J1, gear_ratio: 13.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -180, soft_limit_max: 180, default_current_ma: 1600, default_microsteps: 16, home_enabled: true, home_dir: 0, home_speed: 200, home_trig_low: true, home_offset_deg: 0.0, home_seek_max_deg: 400.0, home_order: 0, end_limit: true, home_backoff_deg: 30.0 }
+  - { can_id: 2, name: J2, gear_ratio: 150,  pulses_per_rev: 3200, invert: true,  max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 2000, default_microsteps: 16, home_enabled: true, home_dir: 0, home_speed: 200, home_trig_low: true, home_offset_deg: 0.0, home_seek_max_deg: 200.0, home_order: 1, end_limit: true, home_backoff_deg: 30.0 }
+  - { can_id: 3, name: J3, gear_ratio: 150,  pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 2000, default_microsteps: 16, home_enabled: true, home_dir: 0, home_speed: 200, home_trig_low: true, home_offset_deg: 0.0, home_seek_max_deg: 200.0, home_order: 2, end_limit: true, home_backoff_deg: 30.0 }
+  - { can_id: 4, name: J4, gear_ratio: 48,   pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -180, soft_limit_max: 180, default_current_ma: 1600, default_microsteps: 16, home_enabled: true, home_dir: 0, home_speed: 200, home_trig_low: true, home_offset_deg: 0.0, home_seek_max_deg: 400.0, home_order: 3, end_limit: true, home_backoff_deg: 30.0 }
+  - { can_id: 5, name: J5, gear_ratio: 67.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min:  -90, soft_limit_max:  90, default_current_ma: 1600, default_microsteps: 16, home_enabled: true, home_dir: 0, home_speed: 200, home_trig_low: true, home_offset_deg: 0.0, home_seek_max_deg: 200.0, home_order: 4, end_limit: true, home_backoff_deg: 30.0 }
+  - { can_id: 6, name: J6, gear_ratio: 13.5, pulses_per_rev: 3200, invert: false, max_speed: 1500, default_acc: 2, soft_limit_min: -360, soft_limit_max: 360, default_current_ma: 1600, default_microsteps: 16, home_enabled: true, home_dir: 0, home_speed: 200, home_trig_low: true, home_offset_deg: 0.0, home_seek_max_deg: 720.0, home_order: 5, end_limit: true, home_backoff_deg: 30.0 }
+
+# Differential wrist (optional). J5 and J6 are driven by TWO motors (can_id 5 and
+# 6) through a differential: both motors spinning the SAME direction rolls J6,
+# spinning OPPOSITE directions pitches J5. Leave this out (or enabled: false) for
+# a robot whose joints map 1:1 to motors. When enabled, each joint's gear_ratio
+# above is that mode's reduction (roll for J6, pitch for J5) and stays live-tunable.
+#   enabled:     false   turn the coupling on
+#   motor_a:     J5      "+pitch" reference motor (CAN id or joint name)
+#   motor_b:     J6      the other wrist motor (retreats for a +pitch command)
+#   roll_joint:  J6      rotates when both motors spin the same way (sum mode)
+#   pitch_joint: J5      rotates when the motors spin opposite ways (difference mode)
+#   invert:      false   flip the pitch handedness for a mirror-imaged build
+# BENCH-VERIFY at low speed first: jog roll -> both motors same dir; jog pitch ->
+# opposite. Both wrist motors must be HOMED before the coupled angle readout is
+# meaningful (a half-homed wrist falls back to the raw per-motor read).
+# wrist_differential:
+#   enabled: false
+#   motor_a: J5
+#   motor_b: J6
+#   roll_joint: J6
+#   pitch_joint: J5
+#   invert: false
 
 # CAN-attached Arduino-driven servo gripper.
 # Wire format: 1 byte payload (0..255) on `can_id`; the MCU maps to servo travel.

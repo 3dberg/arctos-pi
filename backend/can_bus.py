@@ -13,6 +13,7 @@ Frames use standard 11-bit IDs, 500 kbit/s (MKS default).
 """
 from __future__ import annotations
 
+import errno
 import logging
 import threading
 import time
@@ -20,6 +21,38 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
 
 log = logging.getLogger(__name__)
+
+# SocketCAN transmit tuning. The kernel CAN tx queue (txqueuelen, ~10 frames by
+# default) overruns if we enqueue a burst faster than the 500 kbit bus drains
+# it. On hardware that surfaced as the bus "locking up" after a couple of
+# commands: several poll loops plus a homing seek all transmit at once, the
+# queue fills, python-can raises "Transmit buffer full", and the old code
+# misread that as a dead bus and reopened the socket — a reopen storm that
+# wedged the interface. We instead serialize sends, pace them with a minimum
+# inter-frame gap, and treat a momentarily-full queue as transient
+# back-pressure (brief retry, never reopen).
+_MIN_TX_GAP_S = 0.001          # minimum spacing between transmits
+# python-can select() write timeout per frame. A healthy 500 kbit frame is
+# ~0.2 ms on the wire and the kernel tx queue drains a backlog in a few ms, so a
+# healthy send never approaches this — it only bites a genuinely stuck queue.
+# Kept low (was 0.2) so one congested frame can't hold _tx_lock for hundreds of
+# ms and starve the bridge's poll timers (which froze the UI during homing).
+# Bump it for slow slcan-over-serial if needed.
+_TX_TIMEOUT_S = 0.03
+_TX_BACKPRESSURE_RETRIES = 3   # retries when the tx queue is momentarily full
+_TX_BACKOFF_S = 0.005          # wait between back-pressure retries
+_BACKPRESSURE_ERRNOS = {errno.ENOBUFS, errno.EAGAIN, errno.EWOULDBLOCK}
+
+
+def _errno_of(exc: BaseException) -> Optional[int]:
+    """Best-effort OS errno from an exception or its cause. python-can puts the
+    errno on CanOperationError.error_code and chains the original OSError."""
+    for attr in ("errno", "error_code"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            return val
+    cause = exc.__cause__
+    return getattr(cause, "errno", None) if cause is not None else None
 
 
 @dataclass(frozen=True)
@@ -54,6 +87,7 @@ class SlcanBus:
             raise RuntimeError("python-can not installed; pip install python-can[serial]") from e
         self._can = can
         self._bus = can.interface.Bus(bustype="slcan", channel=channel, bitrate=bitrate)
+        self._tx_lock = threading.Lock()
         self._callbacks: list[Callable[[Frame], None]] = []
         self._stop = threading.Event()
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True, name="can-rx")
@@ -66,7 +100,10 @@ class SlcanBus:
             data=frame.data,
             is_extended_id=False,
         )
-        self._bus.send(msg, timeout=0.2)
+        # Serialize writes: concurrent threads writing the serial slcan device
+        # can interleave bytes and corrupt frames.
+        with self._tx_lock:
+            self._bus.send(msg, timeout=_TX_TIMEOUT_S)
 
     def on_receive(self, callback: Callable[[Frame], None]) -> None:
         self._callbacks.append(callback)
@@ -111,8 +148,11 @@ class SocketCanBus:
             raise RuntimeError("python-can not installed; pip install python-can") from e
         self._can = can
         self._channel = channel
-        self._bus_lock = threading.Lock()
+        self._bus_lock = threading.Lock()        # guards _open_bus (bus swap)
+        self._tx_lock = threading.Lock()         # serializes transmits across threads
+        self._last_tx = 0.0                       # monotonic time of the last transmit (pacing)
         self._bus = None  # type: ignore[assignment]
+        self._down = False  # True while send is failing; de-spams the reopen warning
         self._open_bus()
         self._callbacks: list[Callable[[Frame], None]] = []
         self._stop = threading.Event()
@@ -142,27 +182,109 @@ class SocketCanBus:
             data=frame.data,
             is_extended_id=False,
         )
-        try:
-            if self._bus is None:
-                raise OSError("CAN bus not open")
-            self._bus.send(msg, timeout=0.2)
-        except (self._can.exceptions.CanOperationError, OSError, ValueError) as e:
-            # Catch every shape of "socket is dead":
-            #   CanOperationError: python-can's typed wrapper around ENETDOWN
-            #     etc — kernel CAN interface went away.
-            #   OSError: raw errno paths (ENOBUFS, ENODEV, EBADF) that some
-            #     python-can versions don't wrap.
-            #   ValueError: hit when the socket fd has been closed and is now
-            #     -1 — select() rejects negative fds. Happens after a prior
-            #     reopen that itself failed.
-            # In all three, the right move is the same: try once to bring the
-            # bus back and replay the send, so the user gets seamless recovery
-            # the moment they `ip link set can0 up` (or replug the dongle).
-            log.warning("CAN send failed (%s: %s); attempting to reopen %s",
-                        type(e).__name__, e, self._channel)
-            with self._bus_lock:
-                self._open_bus()
-            self._bus.send(msg, timeout=0.2)
+        # One transmit at a time across every caller thread (the poll timers,
+        # the homing worker, trajectory execution), each spaced by _pace(), so
+        # a burst can't overrun the kernel tx queue.
+        with self._tx_lock:
+            self._send_locked(msg)
+
+    def _send_locked(self, msg) -> None:
+        for attempt in range(_TX_BACKPRESSURE_RETRIES + 1):
+            self._pace()
+            try:
+                if self._bus is None:
+                    raise OSError("CAN bus not open")
+                self._bus.send(msg, timeout=_TX_TIMEOUT_S)
+                self._mark_up()
+                return
+            except (self._can.exceptions.CanError, OSError, ValueError) as e:
+                if self._is_backpressure(e):
+                    # TX queue momentarily full. Reopening the bus here is what
+                    # used to wedge it ("send two commands and it stops
+                    # responding"); instead let the queue drain and retry the
+                    # same frame.
+                    if attempt < _TX_BACKPRESSURE_RETRIES:
+                        time.sleep(_TX_BACKOFF_S)
+                        continue
+                    # Retries exhausted. If the controller has gone ERROR/PASSIVE
+                    # (e.g. electrical noise from a misbehaving driver), spinning
+                    # on timeouts won't help — reopen the socket once (re-applies
+                    # the kernel iface state) and replay. Otherwise it's plain
+                    # congestion: surface it to the caller (bridge logs+skips,
+                    # API returns 503) with no reopen.
+                    if self._bus_is_dead():
+                        if not self._down:
+                            log.warning("CAN %s controller wedged (%s); reopening once",
+                                        self._channel, type(e).__name__)
+                            self._down = True
+                        with self._bus_lock:
+                            self._open_bus()
+                        self._bus.send(msg, timeout=_TX_TIMEOUT_S)
+                        self._last_tx = time.monotonic()
+                        self._mark_up()
+                        return
+                    raise
+                # Genuine dead socket — catches every shape of it:
+                #   CanError: python-can's typed wrapper around ENETDOWN etc.
+                #   OSError: raw errno paths (ENODEV, EBADF) some versions don't
+                #     wrap, plus our own "CAN bus not open".
+                #   ValueError: socket fd closed to -1 — select() rejects it,
+                #     after a prior reopen that itself failed.
+                # Bring the bus back and replay the send so the user gets
+                # seamless recovery the moment they `ip link set can0 up` (or
+                # replug the dongle). Log only the first failure (and
+                # "recovered" once it returns) so a downed bus doesn't flood the
+                # log at the poll rate.
+                if not self._down:
+                    log.warning("CAN send failing (%s: %s); reopening %s and retrying "
+                                "(further errors suppressed until recovery)",
+                                type(e).__name__, e, self._channel)
+                    self._down = True
+                with self._bus_lock:
+                    self._open_bus()
+                self._bus.send(msg, timeout=_TX_TIMEOUT_S)
+                self._last_tx = time.monotonic()
+                self._mark_up()
+                return
+
+    def _pace(self) -> None:
+        """Hold a minimum gap between transmits so a burst of poll/homing reads
+        can't enqueue faster than the bus drains and overrun the kernel tx
+        queue. Caller holds _tx_lock."""
+        if _MIN_TX_GAP_S <= 0:
+            return
+        wait = self._last_tx + _MIN_TX_GAP_S - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self._last_tx = time.monotonic()
+
+    def _is_backpressure(self, e: BaseException) -> bool:
+        """True if e means 'tx queue momentarily full' rather than 'bus dead'."""
+        timeout_exc = getattr(self._can.exceptions, "CanTimeoutError", None)
+        if timeout_exc is not None and isinstance(e, timeout_exc):
+            return True
+        if _errno_of(e) in _BACKPRESSURE_ERRNOS:
+            return True
+        # python-can's socketcan raises CanOperationError("Transmit buffer
+        # full") with no errno when select() times out on a full tx queue.
+        return "buffer full" in str(e).lower()
+
+    def _bus_is_dead(self) -> bool:
+        """True if python-can reports the controller in a wedged error state
+        (ERROR/PASSIVE / bus-off) that timeouts alone won't clear. Best-effort:
+        socketcan exposes bus.state; other backends may not."""
+        state = getattr(self._bus, "state", None)
+        bus_state = getattr(self._can, "BusState", None)
+        if state is None or bus_state is None:
+            return False
+        dead = {getattr(bus_state, n, None) for n in ("PASSIVE", "ERROR", "BUS_OFF", "ERROR_PASSIVE")}
+        dead.discard(None)
+        return state in dead
+
+    def _mark_up(self) -> None:
+        if self._down:
+            log.info("CAN %s recovered", self._channel)
+            self._down = False
 
     def on_receive(self, callback: Callable[[Frame], None]) -> None:
         self._callbacks.append(callback)
@@ -202,13 +324,17 @@ class SocketCanBus:
 class MockBus:
     """In-process fake. Records sent frames; can inject receive frames.
 
-    By default, responds to read commands (0x30, 0x31, 0x33) with synthesized
-    payloads so higher layers can be exercised without hardware.
+    By default, responds to read commands (0x30, 0x31, 0x34) with synthesized
+    payloads, simulates relative moves (0xFD), and fakes the homing handshake
+    (0x90/0x91/0x92 — zeroes the virtual position and replies success) so higher
+    layers can be exercised without hardware.
     """
     auto_respond: bool = True
     sent: list[Frame] = field(default_factory=list)
     _callbacks: list[Callable[[Frame], None]] = field(default_factory=list)
     _virtual_pulses: dict[int, int] = field(default_factory=dict)  # can_id -> pulses
+    _home_params: dict[int, bytes] = field(default_factory=dict)   # can_id -> last 0x90 params
+    _io_status: dict[int, int] = field(default_factory=dict)       # can_id -> raw IO byte (bit0=IN_1)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def send(self, frame: Frame) -> None:
@@ -239,6 +365,24 @@ class MockBus:
             pulses = int.from_bytes(frame.data[4:7], "big")
             delta = pulses if dir_bit else -pulses
             self._virtual_pulses[can_id] = self._virtual_pulses.get(can_id, 0) + delta
+        elif cmd == 0x90:  # set home params — record, ack with status=1
+            self._home_params[can_id] = bytes(frame.data[1:-1])
+            self._respond_status(can_id, 0x90, 1)
+        elif cmd == 0x91:  # go home — driver zeroes at the switch, then succeeds
+            self._virtual_pulses[can_id] = 0
+            self._respond_status(can_id, 0x91, 1)  # Start
+            self._respond_status(can_id, 0x91, 2)  # Success
+        elif cmd == 0x92:  # set current position as zero
+            self._virtual_pulses[can_id] = 0
+            self._respond_status(can_id, 0x92, 1)
+        elif cmd == 0x34:  # read IO status — default IN_1 tripped (bit0 set)
+            bits = self._io_status.get(can_id, 0x01)
+            self._respond_status(can_id, 0x34, bits)
+
+    def _respond_status(self, can_id: int, cmd: int, status: int) -> None:
+        body = bytes([cmd, status & 0xFF])
+        crc = (can_id + sum(body)) & 0xFF
+        self.inject(Frame(can_id, body + bytes([crc])))
 
     def inject(self, frame: Frame) -> None:
         for cb in self._callbacks:

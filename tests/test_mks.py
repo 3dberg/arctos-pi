@@ -136,3 +136,70 @@ def test_parse_rejects_bad_crc():
     bad = bytes([0x31, 0, 0, 0, 1, 0xAA])  # deliberately wrong CRC
     with pytest.raises(ValueError):
         mks.parse_pulses(can_id, bad)
+
+
+# ---- homing ----
+
+def test_set_home_encoding():
+    # active-low switch (trig=0), seek CCW (dir=1), speed 300, endLimit on
+    p = mks.set_home(can_id=1, home_trig=0, home_dir=1, home_speed=300, end_limit=True)
+    assert p[0] == 0x90
+    assert p[1] == 0          # homeTrig=Low
+    assert p[2] == 1          # homeDir=CCW
+    assert p[3] == (300 >> 8) & 0x0F
+    assert p[4] == 300 & 0xFF
+    assert p[5] == 1          # endLimit enabled
+    assert p[-1] == _crc_over(1, p)
+
+
+def test_set_home_validates_ranges():
+    import pytest
+    with pytest.raises(ValueError):
+        mks.set_home(1, home_trig=2, home_dir=0, home_speed=100, end_limit=False)
+    with pytest.raises(ValueError):
+        mks.set_home(1, home_trig=0, home_dir=3, home_speed=100, end_limit=False)
+    with pytest.raises(ValueError):
+        mks.set_home(1, home_trig=0, home_dir=0, home_speed=5000, end_limit=False)
+
+
+def test_go_home_and_axis_zero_frames():
+    g = mks.go_home(2)
+    assert g == bytes([0x91, (2 + 0x91) & 0xFF])
+    z = mks.set_axis_zero(4)
+    assert z == bytes([0x92, (4 + 0x92) & 0xFF])
+
+
+def test_read_io_status_frame():
+    p = mks.read_io_status(3)
+    assert p == bytes([0x34, (3 + 0x34) & 0xFF])
+
+
+def test_parse_status_roundtrip():
+    can_id = 1
+    body = bytes([0x91, mks.GO_HOME_SUCCESS])
+    crc = (can_id + sum(body)) & 0xFF
+    assert mks.parse_status(can_id, body + bytes([crc]), expected_cmd=0x91) == mks.GO_HOME_SUCCESS
+
+
+def test_parse_status_rejects_wrong_cmd():
+    import pytest
+    can_id = 1
+    body = bytes([0x91, 2])
+    payload = body + bytes([(can_id + sum(body)) & 0xFF])
+    with pytest.raises(ValueError):
+        mks.parse_status(can_id, payload, expected_cmd=0x90)
+
+
+def test_parse_io_status_bit_decode():
+    can_id = 1
+    # IN_1 + OUT_1 set -> 0b0101 = 0x05
+    body = bytes([0x34, 0x05])
+    crc = (can_id + sum(body)) & 0xFF
+    io = mks.parse_io_status(can_id, body + bytes([crc]))
+    assert io == {"in_1": True, "in_2": False, "out_1": True, "out_2": False}
+
+
+def test_parse_io_status_rejects_bad_crc():
+    import pytest
+    with pytest.raises(ValueError):
+        mks.parse_io_status(1, bytes([0x34, 0x01, 0xAA]))

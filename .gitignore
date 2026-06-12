@@ -12,3 +12,8 @@ node_modules/
 programs/*.json
 !programs/.gitkeep
 config.yaml
+
+# Local Claude tooling
+.claude/
+claudemap-cache.json
+claudemap-maps.json

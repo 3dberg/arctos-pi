@@ -13,7 +13,10 @@
   .jogbtn { min-width: 72px; min-height: 64px; font-size: 1.8rem; font-weight: 700; }
   .jogbtn.active { background: #2563eb !important; }
   .tabbtn.active { background: #1f2937; color: #e6edf3; }
+  .modebtn { color: #9ca3af; }
+  .modebtn.active { background: #2563eb; color: #fff; }
   .pos { font-variant-numeric: tabular-nums; }
+  .jog-disabled { opacity: 0.35; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -22,6 +25,11 @@
   <div class="flex items-center gap-3 p-2 bg-gray-900 border-b border-gray-800">
     <button id="estop" class="btn estop text-white text-2xl font-bold rounded-lg px-6 py-3 shadow-lg">E-STOP</button>
     <div id="status" class="flex-1 text-sm">connecting…</div>
+    <div class="flex items-center gap-1 bg-gray-800 rounded-lg p-1" title="Manual jog and ROS programs can't drive the bus at once">
+      <button id="mode-manual" class="modebtn btn rounded px-3 py-1.5 text-sm font-semibold active">Manual&nbsp;Jog</button>
+      <button id="mode-programs" class="modebtn btn rounded px-3 py-1.5 text-sm font-semibold">Programs</button>
+    </div>
+    <button id="home-all" class="btn bg-amber-600 hover:bg-amber-500 text-white rounded-lg px-4 py-2 font-semibold" title="Home every axis in sequence">Home All</button>
     <button id="enable-btn" class="btn bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg px-4 py-2 font-semibold">Enable</button>
     <button id="disable-btn" class="btn bg-gray-700 text-white rounded-lg px-4 py-2">Disable</button>
   </div>
@@ -55,6 +63,7 @@
     <div class="flex-1 flex flex-col min-h-0">
       <div class="flex gap-1 p-2 bg-gray-900 border-b border-gray-800">
         <button data-tab="status" class="tabbtn active rounded px-4 py-2 text-sm">Status</button>
+        <button data-tab="homing" class="tabbtn rounded px-4 py-2 text-sm">Homing</button>
         <button data-tab="teach" class="tabbtn rounded px-4 py-2 text-sm">Teach</button>
         <button data-tab="moveit" class="tabbtn rounded px-4 py-2 text-sm">Motion / MoveIt</button>
         <button data-tab="config" class="tabbtn rounded px-4 py-2 text-sm">Driver config</button>
@@ -62,11 +71,20 @@
       <div id="tab-status" class="tabpanel flex-1 p-3 overflow-auto">
         <table class="w-full text-sm">
           <thead class="text-xs text-gray-400">
-            <tr><th class="text-left">Axis</th><th class="text-right">Degrees</th><th class="text-right">Pulses</th><th class="text-right">Enabled</th></tr>
+            <tr><th class="text-left">Axis</th><th class="text-right">Degrees</th><th class="text-right">Pulses</th><th class="text-right">Enabled</th><th class="text-right">Homed</th><th class="text-right">Home</th></tr>
           </thead>
           <tbody id="status-body"></tbody>
         </table>
         <button id="refresh-btn" class="mt-3 btn bg-gray-700 rounded px-3 py-2 text-sm">Refresh positions</button>
+      </div>
+      <div id="tab-homing" class="tabpanel flex-1 p-3 overflow-auto hidden">
+        <div class="text-xs text-gray-400 mb-2">
+          Validate each axis individually: set the <b>seek direction</b>, watch the live
+          <b>sensor</b> state while you move the joint by hand, then <b>Home</b>. The sensor reads
+          via IN_1 with the axis's reverse-logic applied (config <code>home_trig_low</code>).
+          Absolute moves stay blocked until an axis is homed.
+        </div>
+        <div id="homing-body" class="flex flex-col gap-2"></div>
       </div>
       <div id="tab-teach" class="tabpanel flex-1 p-3 overflow-auto hidden">
        <div class="flex flex-col gap-3">

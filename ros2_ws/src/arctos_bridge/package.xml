@@ -15,6 +15,7 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>control_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>builtin_interfaces</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>

@@ -2,15 +2,36 @@
 <!--
   Arctos 6-axis arm macro.
 
-  GEOMETRY IS APPROXIMATE: links are primitive cylinders/boxes and the link
-  lengths/axes are placeholders chosen to give a self-consistent 6R serial
-  chain that MoveIt can plan over. Replace with real meshes / DH parameters
-  when available — the joint topology and the generated limits stay valid.
+  GEOMETRY IS THE REAL CAD GEOMETRY, ported from the legacy ROS1 package
+  `arctos_urdf_description` (STL meshes under meshes/, exported in millimetres
+  hence the scale="0.001 0.001 0.001" on every <mesh>). The link/joint frames,
+  joint origins (xyz/rpy) and axes, and the per-link mesh visual/collision
+  origins are carried over verbatim from that package's flat URDF so the arm
+  renders with correct geometry, scale and articulation.
+
+  NAME MAPPING (legacy ROS1 -> this package, kept for the ROS2 stack):
+    base_link -> base_link        joint1 -> J1
+    Link_1_1  -> link1            joint2 -> J2
+    Link_2_1  -> link2            joint3 -> J3
+    Link_3_1  -> link3            joint4 -> J4
+    Link_4_1  -> link4            joint5 -> J5
+    Link_5_1  -> link5            joint6 -> J6
+    Link_6_1  -> link6
+    Gripper_1 -> gripper_base (fixed, visual only)
+    Left_jaw_1/Right_jaw_1 -> left_jaw/right_jaw (fixed, visual only)
+
+  The link names base_link / link1..link6 / tool0 and the joint names J1..J6
+  MUST stay identical to arctos_moveit_config/config/arctos.srdf and
+  moveit_controllers.yaml. The gripper/jaws are NOT MoveIt joints (the gripper
+  is driven as a separate CAN device); they are added as fixed visual links and
+  must NOT be added to the SRDF arm group.
 
   Joint limit values are NOT hand-authored: they come from
   config/arctos_joints.yaml, which backend.ros_export generates from the
   arctos-pi config (config.yaml). Regenerate after editing the config by
-  running "python -m backend.ros_export" (see that module's docstring).
+  running "python -m backend.ros_export" (see that module's docstring). The
+  legacy URDF had these as `continuous` joints; here they keep the generated
+  revolute limits so the kinematics match the rest of the ROS2/MoveIt stack.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -20,29 +41,37 @@
     <xacro:property name="jspec" value="${xacro.load_yaml(joints_file)}"/>
     <xacro:property name="joints" value="${jspec['joints']}"/>
 
+    <!-- Mesh material (matches the legacy paint_metallic_blue_2 light grey). -->
     <material name="arctos_grey">
-      <color rgba="0.55 0.57 0.60 1.0"/>
-    </material>
-    <material name="arctos_accent">
-      <color rgba="0.10 0.45 0.80 1.0"/>
+      <color rgba="0.776 0.776 0.776 1.0"/>
     </material>
 
-    <!-- A primitive cylindrical link of given length along +Z. -->
-    <xacro:macro name="seg_link" params="name length radius:=0.04 material:=arctos_grey">
+    <!-- A link whose visual+collision is a millimetre-scale STL mesh. The
+         origin places the mesh in the link frame (carried from the legacy URDF). -->
+    <xacro:macro name="mesh_link"
+                 params="name mesh origin_xyz origin_rpy:='0 0 0'
+                         mass ixx ixy ixz iyy iyz izz com_xyz">
       <link name="${name}">
         <visual>
-          <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
-          <geometry><cylinder length="${length}" radius="${radius}"/></geometry>
-          <material name="${material}"/>
+          <origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
+          <geometry>
+            <mesh filename="package://arctos_description/meshes/${mesh}"
+                  scale="0.001 0.001 0.001"/>
+          </geometry>
+          <material name="arctos_grey"/>
         </visual>
         <collision>
-          <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
-          <geometry><cylinder length="${length}" radius="${radius}"/></geometry>
+          <origin xyz="${origin_xyz}" rpy="${origin_rpy}"/>
+          <geometry>
+            <mesh filename="package://arctos_description/meshes/${mesh}"
+                  scale="0.001 0.001 0.001"/>
+          </geometry>
         </collision>
         <inertial>
-          <origin xyz="0 0 ${length/2}" rpy="0 0 0"/>
-          <mass value="0.5"/>
-          <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+          <origin xyz="${com_xyz}" rpy="0 0 0"/>
+          <mass value="${mass}"/>
+          <inertia ixx="${ixx}" ixy="${ixy}" ixz="${ixz}"
+                   iyy="${iyy}" iyz="${iyz}" izz="${izz}"/>
         </inertial>
       </link>
     </xacro:macro>
@@ -62,53 +91,113 @@
       </joint>
     </xacro:macro>
 
+    <!-- ================= Links (real meshes, mm-scale) ================= -->
+
     <!-- World-anchored base. -->
-    <link name="${prefix}base_link">
-      <visual>
-        <origin xyz="0 0 0.025" rpy="0 0 0"/>
-        <geometry><box size="0.16 0.16 0.05"/></geometry>
-        <material name="arctos_accent"/>
-      </visual>
-      <collision>
-        <origin xyz="0 0 0.025" rpy="0 0 0"/>
-        <geometry><box size="0.16 0.16 0.05"/></geometry>
-      </collision>
-      <inertial>
-        <mass value="1.0"/>
-        <inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.005"/>
-      </inertial>
-    </link>
+    <xacro:mesh_link name="${prefix}base_link" mesh="base_link.stl"
+                     origin_xyz="0 0 0"
+                     com_xyz="0.000938 0.047087 0.066632" mass="7.598578"
+                     ixx="0.063328" ixy="-0.000434" ixz="0.000108"
+                     iyy="0.03095" iyz="0.001366" izz="0.072371"/>
 
-    <!-- Links (approximate lengths, metres). -->
-    <xacro:seg_link name="${prefix}link1" length="0.12" radius="0.05"/>
-    <xacro:seg_link name="${prefix}link2" length="0.18" radius="0.04"/>
-    <xacro:seg_link name="${prefix}link3" length="0.16" radius="0.035"/>
-    <xacro:seg_link name="${prefix}link4" length="0.10" radius="0.03"/>
-    <xacro:seg_link name="${prefix}link5" length="0.08" radius="0.028"/>
-    <xacro:seg_link name="${prefix}link6" length="0.05" radius="0.025"/>
+    <xacro:mesh_link name="${prefix}link1" mesh="Link_1_1.stl"
+                     origin_xyz="-0.0 -0.000529 -0.111"
+                     com_xyz="0.002219 -0.004863 0.085468" mass="10.394712"
+                     ixx="0.061139" ixy="0.00017" ixz="-0.00148"
+                     iyy="0.073854" iyz="0.003835" izz="0.05669"/>
 
-    <!-- Tool flange. -->
+    <xacro:mesh_link name="${prefix}link2" mesh="Link_2_1.stl"
+                     origin_xyz="0.05713 0.020356 -0.289378"
+                     com_xyz="0.055314 0.010844 0.114124" mass="11.558090"
+                     ixx="0.128567" ixy="3e-06" ixz="0.001539"
+                     iyy="0.14463" iyz="-0.003293" izz="0.044463"/>
+
+    <xacro:mesh_link name="${prefix}link3" mesh="Link_3_1.stl"
+                     origin_xyz="-0.043 0.019045 -0.550385"
+                     com_xyz="-0.041784 -0.039130 0.012218" mass="3.601406"
+                     ixx="0.012497" ixy="-3.6e-05" ixz="-8.1e-05"
+                     iyy="0.006916" iyz="0.001536" izz="0.011789"/>
+
+    <xacro:mesh_link name="${prefix}link4" mesh="Link_4_1.stl"
+                     origin_xyz="-1e-06 0.15874 -0.57209"
+                     com_xyz="0.000211 -0.060288 -0.000541" mass="3.785289"
+                     ixx="0.011624" ixy="-9e-06" ixz="4e-06"
+                     iyy="0.011491" iyz="-7.1e-05" izz="0.017363"/>
+
+    <xacro:mesh_link name="${prefix}link5" mesh="Link_5_1.stl"
+                     origin_xyz="0.039011 0.279927 -0.570316"
+                     com_xyz="0.039729 -0.012662 0.000793" mass="0.831981"
+                     ixx="0.000732" ixy="-1.2e-05" ixz="5e-06"
+                     iyy="0.000958" iyz="-5e-06" izz="0.000907"/>
+
+    <xacro:mesh_link name="${prefix}link6" mesh="Link_6_1.stl"
+                     origin_xyz="-0.000193 0.313762 -0.570316"
+                     com_xyz="6.6e-08 -0.003042 -3e-07" mass="0.103435"
+                     ixx="5.2e-05" ixy="-0.0" ixz="0.0"
+                     iyy="0.000103" iyz="0.0" izz="5.2e-05"/>
+
+    <!-- Tool flange (MoveIt tip_link; no legacy mesh, kept as a frame). -->
     <link name="${prefix}tool0"/>
 
-    <!-- Serial chain. Axes: J1 base yaw (Z), J2/J3 pitch (Y),
-         J4 roll (Z), J5 pitch (Y), J6 roll (Z). -->
+    <!-- ================= Arm joints J1..J6 =================
+         Origins/axes carried verbatim from the legacy joint1..joint6. -->
     <xacro:rev_joint name="J1" parent="${prefix}base_link" child="${prefix}link1"
-                     axis_xyz="0 0 1" origin_xyz="0 0 0.05"/>
+                     axis_xyz="-0.0 0.0 1.0"  origin_xyz="0.0 0.000529 0.111"/>
     <xacro:rev_joint name="J2" parent="${prefix}link1" child="${prefix}link2"
-                     axis_xyz="0 1 0" origin_xyz="0 0 0.12"/>
+                     axis_xyz="1.0 -0.0 -0.0" origin_xyz="-0.05713 -0.020885 0.178378"/>
     <xacro:rev_joint name="J3" parent="${prefix}link2" child="${prefix}link3"
-                     axis_xyz="0 1 0" origin_xyz="0 0 0.18"/>
+                     axis_xyz="-1.0 -0.0 0.0" origin_xyz="0.10013 0.001311 0.261007"/>
     <xacro:rev_joint name="J4" parent="${prefix}link3" child="${prefix}link4"
-                     axis_xyz="0 0 1" origin_xyz="0 0 0.16"/>
+                     axis_xyz="-0.0 1.0 -0.0" origin_xyz="-0.042999 -0.139695 0.021705"/>
     <xacro:rev_joint name="J5" parent="${prefix}link4" child="${prefix}link5"
-                     axis_xyz="0 1 0" origin_xyz="0 0 0.10"/>
+                     axis_xyz="-1.0 -0.0 0.0" origin_xyz="-0.039012 -0.121187 -0.001774"/>
     <xacro:rev_joint name="J6" parent="${prefix}link5" child="${prefix}link6"
-                     axis_xyz="0 0 1" origin_xyz="0 0 0.08"/>
+                     axis_xyz="-0.0 1.0 -0.0" origin_xyz="0.039204 -0.033835 0.0"/>
 
+    <!-- tool0 at the link6 flange (legacy URDF had no explicit tool frame). -->
     <joint name="${prefix}tool0_fixed" type="fixed">
       <parent link="${prefix}link6"/>
       <child link="${prefix}tool0"/>
-      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- ================= Gripper (VISUAL ONLY) =================
+         The gripper is driven as a separate CAN device, NOT a MoveIt joint, so
+         these links are fixed and intentionally absent from the SRDF arm group
+         and the trajectory controllers. The jaw "prismatic" joints from the
+         legacy URDF are pinned closed (fixed) here since they are not actuated
+         through MoveIt. -->
+    <xacro:mesh_link name="${prefix}gripper_base" mesh="Gripper_1.stl"
+                     origin_xyz="-0.000193 0.319847 -0.570316"
+                     com_xyz="0.003611 -0.014761 -0.001037" mass="0.581049"
+                     ixx="0.000385" ixy="1e-05" ixz="3e-06"
+                     iyy="0.000495" iyz="-2e-06" izz="0.000263"/>
+    <joint name="${prefix}gripper" type="fixed">
+      <origin xyz="0.0 -0.006085 0.0" rpy="0 0 0"/>
+      <parent link="${prefix}link6"/>
+      <child link="${prefix}gripper_base"/>
+    </joint>
+
+    <xacro:mesh_link name="${prefix}left_jaw" mesh="Left_jaw_1.stl"
+                     origin_xyz="-0.007934 0.359845 -0.599867"
+                     com_xyz="-0.011143 -0.009692 -0.009386" mass="0.073696"
+                     ixx="1.1e-05" ixy="2e-06" ixz="-0.0"
+                     iyy="6e-06" iyz="-0.0" izz="1.4e-05"/>
+    <joint name="${prefix}jaw1" type="fixed">
+      <origin xyz="0.007741 -0.039998 0.029551" rpy="0 0 0"/>
+      <parent link="${prefix}gripper_base"/>
+      <child link="${prefix}left_jaw"/>
+    </joint>
+
+    <xacro:mesh_link name="${prefix}right_jaw" mesh="Right_jaw_1.stl"
+                     origin_xyz="-0.007934 0.359845 -0.539867"
+                     com_xyz="-0.008289 -0.009769 0.009396" mass="0.073129"
+                     ixx="1.1e-05" ixy="-1e-06" ixz="-1e-06"
+                     iyy="6e-06" iyz="0.0" izz="1.4e-05"/>
+    <joint name="${prefix}jaw2" type="fixed">
+      <origin xyz="0.007741 -0.039998 -0.030449" rpy="0 0 0"/>
+      <parent link="${prefix}gripper_base"/>
+      <child link="${prefix}right_jaw"/>
     </joint>
 
   </xacro:macro>

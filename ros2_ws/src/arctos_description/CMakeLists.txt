@@ -4,7 +4,7 @@ project(arctos_description)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY urdf config launch rviz
+  DIRECTORY meshes urdf config launch rviz
   DESTINATION share/${PROJECT_NAME}
 )
 

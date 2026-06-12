@@ -1,15 +1,23 @@
 [Unit]
-Description=arctos-pi CAN controller + web UI
+Description=arctos-pi web UI (ROS2 client; Jazzy clean env)
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=@@REPO_DIR@@
-ExecStart=@@REPO_DIR@@/.venv/bin/python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
+# Run through the Jazzy clean-env wrapper (~/.local/bin/arctos-r2.sh) so the
+# login shell's conda `ros_noetic` env can't shadow ROS2: the wrapper does
+# `env -i`, sources /opt/ros/jazzy on SYSTEM python3.12 (which has rclpy + the
+# FastAPI stack), and PREPENDS the repo to PYTHONPATH (keeping rclpy's path).
+# The old @@REPO_DIR@@/.venv/bin/python is conda py3.11 with NO rclpy, so the web
+# UI's /api/ros/* reported "ModuleNotFoundError: No module named 'rclpy'".
+# ARCTOS_ROS=1 makes the UI a ROS client: it does NOT open can0 (the arctos_bridge
+# owns the bus), avoiding the double-CAN-owner bus flood. The wrapper does env -i,
+# so per-process env (ARCTOS_ROS, PYTHONUNBUFFERED) must be set INSIDE the
+# command, not via Environment=.
+ExecStart=%h/.local/bin/arctos-r2.sh 'PYTHONUNBUFFERED=1 ARCTOS_ROS=1 python3 -m uvicorn backend.api:app --host 0.0.0.0 --port 8000'
 Restart=on-failure
 RestartSec=3
-# Tighten when running as root on Pi; user unit runs as the invoking user.
-Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=default.target

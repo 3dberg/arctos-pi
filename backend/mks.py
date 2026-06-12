@@ -14,6 +14,7 @@ class Cmd(IntEnum):
     READ_ENCODER_CARRY = 0x30   # returns int32 carry + uint16 within-turn value
     READ_PULSES = 0x31          # returns int32 pulses received
     READ_SHAFT_ANGLE = 0x33     # returns int32 angle, 0..0xFFFF = one rev
+    READ_IO_STATUS = 0x34       # returns 1 status byte: bit0=IN_1 bit1=IN_2 bit2=OUT_1 bit3=OUT_2
     READ_SHAFT_ERROR = 0x39
     READ_EN_PIN = 0x3A
     READ_LOCK_STATUS = 0x3E
@@ -23,7 +24,9 @@ class Cmd(IntEnum):
     SET_SUBDIVISION = 0x84      # microsteps, 1..256 (0=256)
     SET_EN_ACTIVE = 0x85
     SET_MOTOR_DIR = 0x86
-    SET_ZERO_MODE = 0x90
+    SET_HOME = 0x90             # set home params: homeTrig, homeDir, homeSpeed, endLimit
+    GO_HOME = 0x91             # trigger driver autonomous home seek; status 0=fail 1=start 2=success
+    SET_AXIS_ZERO = 0x92       # set current position as zero (no motion); like go_home without moving
 
     ENABLE_MOTOR = 0xF3         # param: 1=enable 0=disable
     EMERGENCY_STOP = 0xF7
@@ -142,6 +145,54 @@ def set_motor_direction(can_id: int, reverse: bool) -> bytes:
     return _payload(can_id, Cmd.SET_MOTOR_DIR, bytes([1 if reverse else 0]))
 
 
+# ---------- Homing commands ----------
+
+def set_home(can_id: int, home_trig: int, home_dir: int, home_speed: int,
+             end_limit: bool) -> bytes:
+    """Set the driver's home/endstop parameters (CMD 0x90).
+
+    Byte layout: [homeTrig][homeDir][speed_high_4bits][speed_low_8bits][endLimit]
+      home_trig: endstop active level — 0=Low, 1=High. A reverse-logic
+                 (active-low / normally-closed) home switch uses 0.
+      home_dir:  seek direction — 0=CW, 1=CCW. This is the RAW driver
+                 direction; do NOT pre-apply the software `invert` flag.
+      home_speed: 0..0x0FFF, same 12-bit encoding as speed_mode.
+      end_limit: enable the driver's own limit feature (separate from the
+                 software seek bound enforced in motion.py).
+    Persists to driver flash; first use of end_limit requires a go_home after.
+    """
+    if home_trig not in (0, 1):
+        raise ValueError("home_trig must be 0 (Low) or 1 (High)")
+    if home_dir not in (0, 1):
+        raise ValueError("home_dir must be 0 (CW) or 1 (CCW)")
+    if not 0 <= home_speed <= 0x0FFF:
+        raise ValueError("home_speed must be 0..4095")
+    params = bytes([
+        home_trig,
+        home_dir,
+        (home_speed >> 8) & 0x0F,
+        home_speed & 0xFF,
+        1 if end_limit else 0,
+    ])
+    return _payload(can_id, Cmd.SET_HOME, params)
+
+
+def go_home(can_id: int) -> bytes:
+    """Trigger the driver's autonomous home seek (CMD 0x91). Two-phase reply:
+    an immediate status=1 (Start), then a later status=2 (Success) / 0 (Fail)."""
+    return _payload(can_id, Cmd.GO_HOME)
+
+
+def set_axis_zero(can_id: int) -> bytes:
+    """Set the current position as the axis zero without moving (CMD 0x92)."""
+    return _payload(can_id, Cmd.SET_AXIS_ZERO)
+
+
+def read_io_status(can_id: int) -> bytes:
+    """Request the IO port status (CMD 0x34). Reply decoded by parse_io_status."""
+    return _payload(can_id, Cmd.READ_IO_STATUS)
+
+
 # ---------- Read commands ----------
 
 def read_encoder_carry(can_id: int) -> bytes:
@@ -190,6 +241,35 @@ def parse_pulses(can_id: int, payload: bytes) -> int:
         f"unexpected READ_PULSES reply length: {len(payload)} "
         f"(want 6 for int32-pulses firmware or 8 for int48-pulses firmware)"
     )
+
+
+def parse_status(can_id: int, payload: bytes, expected_cmd: int) -> int:
+    """Generic single-byte status reply: [CMD][status][CRC] (3 bytes).
+
+    Used by GO_HOME (0x91: 0=fail 1=start 2=success), SET_HOME (0x90) and
+    SET_AXIS_ZERO (0x92), which all reply with a 1-byte status."""
+    _check(can_id, payload, expected_cmd=expected_cmd, expected_len=3)
+    return payload[1]
+
+
+# Status values returned by GO_HOME (CMD 0x91).
+GO_HOME_FAIL = 0
+GO_HOME_START = 1
+GO_HOME_SUCCESS = 2
+
+
+def parse_io_status(can_id: int, payload: bytes) -> dict:
+    """Decode a 0x34 IO-status reply: [CMD][status][CRC] (3 bytes). Returns the
+    RAW electrical levels; active-low interpretation belongs to the caller.
+    Bit map per MKS spec: bit0=IN_1, bit1=IN_2, bit2=OUT_1, bit3=OUT_2."""
+    _check(can_id, payload, expected_cmd=Cmd.READ_IO_STATUS, expected_len=3)
+    bits = payload[1]
+    return {
+        "in_1": bool(bits & 0x01),
+        "in_2": bool(bits & 0x02),
+        "out_1": bool(bits & 0x04),
+        "out_2": bool(bits & 0x08),
+    }
 
 
 def _check(can_id: int, payload: bytes, expected_cmd: int, expected_len: int) -> None:

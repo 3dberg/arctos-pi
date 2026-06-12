@@ -30,10 +30,15 @@ try:  # rclpy + message types only exist in a sourced ROS2 env
     from rclpy.action import ActionClient
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
+    from rclpy.qos import DurabilityPolicy, QoSProfile
 
     from builtin_interfaces.msg import Duration
     from control_msgs.action import FollowJointTrajectory
+    from control_msgs.msg import JointJog
+    from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+    from rcl_interfaces.srv import SetParameters
     from sensor_msgs.msg import JointState
+    from std_msgs.msg import Int32
     from std_srvs.srv import SetBool, Trigger
     from trajectory_msgs.msg import JointTrajectoryPoint
 
@@ -62,21 +67,47 @@ class RosClient:
         controller_name: str = "arctos_arm_controller",
         estop_service: str = "/arctos_bridge/estop",
         enable_service: str = "/arctos_bridge/enable",
+        jog_topic: str = "/arctos_bridge/joint_jog",
+        home_service_prefix: str = "/arctos_bridge/home_",
+        home_all_service: str = "/arctos_bridge/home_all",
+        homed_topic: str = "/arctos_bridge/homed_status",
+        set_dir_prefix: str = "/arctos_bridge/set_dir_",
+        home_switch_topic: str = "/arctos_bridge/home_switch_status",
+        set_params_service: str = "/arctos_bridge/set_parameters",
     ) -> None:
         if not ros_available():
             raise RosUnavailable(f"rclpy not importable: {import_error()}")
 
         self._action_name = f"/{controller_name}/follow_joint_trajectory"
+        self._home_prefix = home_service_prefix
+        self._set_dir_prefix = set_dir_prefix
         rclpy.init()
         self._node: Node = rclpy.create_node("arctos_fastapi_client")
 
         self._latest: Optional[dict] = None
         self._latest_lock = threading.Lock()
+        self._homed_mask = 0
+        self._switch_mask = 0
 
         self._node.create_subscription(JointState, "/joint_states", self._on_js, 10)
         self._estop_cli = self._node.create_client(Trigger, estop_service)
         self._enable_cli = self._node.create_client(SetBool, enable_service)
         self._traj_cli = ActionClient(self._node, FollowJointTrajectory, self._action_name)
+        self._jog_pub = self._node.create_publisher(JointJog, jog_topic, 10)
+
+        # Per-joint home / set-dir services are created lazily by name; home-all up front.
+        self._home_all_cli = self._node.create_client(Trigger, home_all_service)
+        self._home_clis: dict = {}
+        self._set_dir_clis: dict = {}
+        # Driver config (work mode / current / microsteps) is routed through the
+        # bridge node's standard parameter service so /api/work_mode etc. reach
+        # the real drivers in ROS mode (the local dry-run Motion can't).
+        self._set_params_cli = self._node.create_client(SetParameters, set_params_service)
+        # Latched Int32 bitmasks (bit i = joint i), matching the /joint_states
+        # name order from the same bridge node: homed state + live home-switch.
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._node.create_subscription(Int32, homed_topic, self._on_homed, latched)
+        self._node.create_subscription(Int32, home_switch_topic, self._on_switch, latched)
 
         self._executor = MultiThreadedExecutor()
         self._executor.add_node(self._node)
@@ -96,6 +127,33 @@ class RosClient:
     def joint_states(self) -> Optional[dict]:
         with self._latest_lock:
             return dict(self._latest) if self._latest is not None else None
+
+    def _on_homed(self, msg) -> None:
+        with self._latest_lock:
+            self._homed_mask = int(msg.data)
+
+    def _on_switch(self, msg) -> None:
+        with self._latest_lock:
+            self._switch_mask = int(msg.data)
+
+    def _mask_to_joints(self, mask: int) -> dict:
+        with self._latest_lock:
+            names = list(self._latest["name"]) if self._latest is not None else []
+        return {n: bool(mask & (1 << i)) for i, n in enumerate(names)}
+
+    def homed(self) -> dict:
+        """Map the bridge's homed bitmask onto joint names using the latest
+        /joint_states ordering (both come from the same bridge node). Returns
+        {} until joint_states has arrived — callers treat that as un-homed."""
+        with self._latest_lock:
+            mask = self._homed_mask
+        return self._mask_to_joints(mask)
+
+    def home_switch(self) -> dict:
+        """{joint_name: bool} live home-switch state (reverse-logic applied by the bridge)."""
+        with self._latest_lock:
+            mask = self._switch_mask
+        return self._mask_to_joints(mask)
 
     # ---- helpers ----
 
@@ -132,6 +190,99 @@ class RosClient:
         req.data = bool(on)
         resp = self._wait(self._enable_cli.call_async(req), timeout)
         return {"success": resp.success, "message": resp.message}
+
+    # ---- homing (per-joint + all; the bridge runs the GoHome under the interlock) ----
+
+    def home_axis(self, joint_name: str, wait_ready: float = 2.0,
+                  timeout: float = 10.0) -> dict:
+        cli = self._home_clis.get(joint_name)
+        if cli is None:
+            cli = self._node.create_client(Trigger, f"{self._home_prefix}{joint_name}")
+            self._home_clis[joint_name] = cli
+        if not cli.wait_for_service(timeout_sec=wait_ready):
+            raise TimeoutError(f"home service for {joint_name} unavailable")
+        resp = self._wait(cli.call_async(Trigger.Request()), timeout)
+        return {"success": resp.success, "message": resp.message}
+
+    def home_all(self, wait_ready: float = 2.0, timeout: float = 10.0) -> dict:
+        if not self._home_all_cli.wait_for_service(timeout_sec=wait_ready):
+            raise TimeoutError("home_all service unavailable")
+        resp = self._wait(self._home_all_cli.call_async(Trigger.Request()), timeout)
+        return {"success": resp.success, "message": resp.message}
+
+    def set_home_dir(self, joint_name: str, ccw: bool,
+                     wait_ready: float = 2.0, timeout: float = 5.0) -> dict:
+        """Live seek-direction override for one joint (ccw=False -> CW/0, True -> CCW/1)."""
+        cli = self._set_dir_clis.get(joint_name)
+        if cli is None:
+            cli = self._node.create_client(SetBool, f"{self._set_dir_prefix}{joint_name}")
+            self._set_dir_clis[joint_name] = cli
+        if not cli.wait_for_service(timeout_sec=wait_ready):
+            raise TimeoutError(f"set_dir service for {joint_name} unavailable")
+        req = SetBool.Request()
+        req.data = bool(ccw)
+        resp = self._wait(cli.call_async(req), timeout)
+        return {"success": resp.success, "message": resp.message}
+
+    # ---- driver config (work mode / current / microsteps via the bridge's param service) ----
+
+    def _set_axis_param(self, joint_name: str, kind: str, value, as_float: bool = False,
+                        wait_ready: float = 2.0, timeout: float = 5.0) -> dict:
+        """Set one driver param on the bridge (axis.<joint>.<kind> = value). The
+        bridge applies it (flash write for work_mode/current/microsteps; a plain
+        software conversion factor for gear_ratio) and reports success via the
+        SetParametersResult. `as_float` selects a DOUBLE param (gear_ratio) vs the
+        default INTEGER param."""
+        if not self._set_params_cli.wait_for_service(timeout_sec=wait_ready):
+            raise TimeoutError("set_parameters service unavailable")
+        req = SetParameters.Request()
+        if as_float:
+            pv = ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=float(value))
+        else:
+            pv = ParameterValue(type=ParameterType.PARAMETER_INTEGER, integer_value=int(value))
+        req.parameters = [Parameter(name=f"axis.{joint_name}.{kind}", value=pv)]
+        resp = self._wait(self._set_params_cli.call_async(req), timeout)
+        res = resp.results[0] if resp.results else None
+        ok = bool(res.successful) if res is not None else False
+        msg = (res.reason if res is not None else "") or f"{joint_name} {kind}={value}"
+        return {"success": ok, "message": msg}
+
+    def set_work_mode(self, joint_name: str, mode: int, **kw) -> dict:
+        return self._set_axis_param(joint_name, "work_mode", mode, **kw)
+
+    def set_current(self, joint_name: str, milliamps: int, **kw) -> dict:
+        return self._set_axis_param(joint_name, "current_ma", milliamps, **kw)
+
+    def set_microsteps(self, joint_name: str, microsteps: int, **kw) -> dict:
+        return self._set_axis_param(joint_name, "microsteps", microsteps, **kw)
+
+    def set_gear_ratio(self, joint_name: str, ratio: float, **kw) -> dict:
+        return self._set_axis_param(joint_name, "gear_ratio", ratio, as_float=True, **kw)
+
+    def set_home_offset(self, joint_name: str, offset_deg: float, **kw) -> dict:
+        """Joint-zero calibration: the joint angle assigned to the home-switch
+        position (software-only conversion shift, like gear_ratio)."""
+        return self._set_axis_param(joint_name, "home_offset_deg", offset_deg, as_float=True, **kw)
+
+    # ---- manual jog (fire-and-forget topic; bridge has a deadman stop) ----
+
+    def jog(self, joint_name: str, velocity: float) -> None:
+        """Publish a hold-to-run jog for one joint. velocity in [-1, 1]: sign is
+        direction, magnitude is the fraction of the axis max_speed. The UI must
+        republish at ~10 Hz while held; the bridge auto-stops on silence."""
+        msg = JointJog()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.joint_names = [joint_name]
+        msg.velocities = [float(velocity)]
+        self._jog_pub.publish(msg)
+
+    def jog_stop(self, joint_names: list[str]) -> None:
+        """Immediately stop the given joints (zero velocity)."""
+        msg = JointJog()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.joint_names = list(joint_names)
+        msg.velocities = [0.0] * len(joint_names)
+        self._jog_pub.publish(msg)
 
     # ---- trajectory execution ----
 
